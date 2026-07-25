@@ -17,11 +17,17 @@ add_library(VPGLoader
     src/VPGLoader.cpp
     src/image/ImageLoader.cpp
     src/model/ModelLoader.cpp
+    src/texture/Texture.cpp
+    src/texture/TextureCache.cpp
     src/texture/TextureConverter.cpp
+    src/texture/TextureLoader.cpp
 )
 add_library(VPGLoader::VPGLoader ALIAS VPGLoader)
 
 target_compile_features(VPGLoader PUBLIC cxx_std_17)
+if(MSVC)
+    target_compile_options(VPGLoader PRIVATE /utf-8)
+endif()
 target_include_directories(VPGLoader
     PUBLIC
         $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -33,6 +39,12 @@ target_link_libraries(VPGLoader
         KTX::ktx
         OpenImageIO::OpenImageIO
 )
+
+if(BUILD_SHARED_LIBS)
+    target_compile_definitions(VPGLoader PRIVATE VPGLOADER_BUILDING_LIBRARY)
+else()
+    target_compile_definitions(VPGLoader PUBLIC VPGLOADER_STATIC)
+endif()
 
 set_target_properties(VPGLoader PROPERTIES
     EXPORT_NAME VPGLoader

@@ -1,5 +1,10 @@
 #pragma once
 
+#include <VPGLoader/Texture.hpp>
+#include <VPGLoader/TextureCache.hpp>
+#include <VPGLoader/TextureConverter.hpp>
+#include <VPGLoader/TextureLoader.hpp>
+
 #include <string_view>
 
 namespace vpgloader {

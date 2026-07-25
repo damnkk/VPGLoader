@@ -77,3 +77,33 @@ src/texture/        Future KTX-backed texture converter
 examples/           Optional CMake example
 cmake/              Installed-package configuration template
 ```
+
+## Texture ownership and cache
+
+Image loading returns a `TextureHandle` (`std::shared_ptr<const Texture>`).
+The underlying `Texture` owns a contiguous `std::vector<uint8_t>` and its
+metadata, including the source path, filename, size, pixel format, dimensions,
+and mip layout. Copy the handle, not `imageData`; data remains valid while at
+least one handle exists.
+
+`TextureLoader::LoadCached()` uses a process-wide weak cache. It coalesces
+concurrent requests and reuses an already-live texture, but does not retain
+CPU pixel data after callers release their handles. This is the appropriate
+default for a renderer that uploads a texture to the GPU and then releases the
+CPU copy. Call `TextureCache::Default().Invalidate(path)` when a source file
+changes.
+
+For an editor, preview tool, or conversion batch that benefits from keeping a
+bounded CPU cache, create a `TextureCache` with a byte budget:
+
+```cpp
+vpgloader::TextureCache previewCache({ 128 * 1024 * 1024 });
+auto texture = previewCache.Load("assets/albedo.png");
+
+// No pixel copy: the converter reads from the same immutable Texture.
+vpgloader::texture::TextureConverter::SaveAsKtx(texture, "assets/albedo.ktx");
+```
+
+The initial KTX writer emits an uncompressed KTX 1.1 file for one- to
+four-channel `UInt8` textures. KTX2, supercompression, and GPU block formats
+are deliberately deferred until their output policy is specified.
