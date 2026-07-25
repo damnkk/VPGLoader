@@ -1,3 +1,4 @@
 #include <VPGLoader/VPGLoader.hpp>
 
-// The root translation unit is intentionally minimal while the public API is designed.
+// Keep the aggregate public header in the normal build so include-order
+// regressions are caught.

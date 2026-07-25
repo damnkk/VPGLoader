@@ -5,6 +5,7 @@ include(CMakeFindDependencyMacro)
 find_dependency(assimp CONFIG REQUIRED)
 find_dependency(Ktx CONFIG REQUIRED)
 find_dependency(OpenImageIO CONFIG REQUIRED)
+find_dependency(Threads REQUIRED)
 
 include("${CMAKE_CURRENT_LIST_DIR}/VPGLoaderTargets.cmake")
 

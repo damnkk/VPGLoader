@@ -1,9 +1,8 @@
 # VPGLoader
 
-VPGLoader is a C++ resource-loading library. The first release establishes the
-build and dependency foundation for image loading (OpenImageIO), model loading
-(Assimp), and future KTX texture conversion (KTX-Software). The loading and
-conversion APIs and implementations will follow in a later iteration.
+VPGLoader is a C++17 CPU resource-loading library. OpenImageIO decodes texture
+files, Assimp produces complete model data, and KTX-Software writes loaded
+textures as KTX. The public objects contain no Vulkan or renderer state.
 
 ## Prerequisites
 
@@ -64,16 +63,15 @@ cpack --config build/debug/CPackConfig.cmake
 ```
 
 Set `VPGLOADER_ENABLE_PACKAGING=OFF` to omit CPack metadata. Packaging only
-includes VPGLoader artifacts; consumers should resolve Assimp and OpenImageIO
-through the same vcpkg toolchain.
+includes VPGLoader artifacts; consumers should resolve Assimp, OpenImageIO,
+and KTX-Software through the same vcpkg toolchain.
 
 ## Repository layout
 
 ```text
 include/VPGLoader/  Public library headers
-src/image/          Future OpenImageIO-backed image loader
-src/model/          Future Assimp-backed model loader
-src/texture/        Future KTX-backed texture converter
+src/model/          Assimp-backed CPU model loader
+src/texture/        OpenImageIO loading, cache, and KTX conversion
 examples/           Optional CMake example
 cmake/              Installed-package configuration template
 ```
@@ -107,3 +105,46 @@ vpgloader::texture::TextureConverter::SaveAsKtx(texture, "assets/albedo.ktx");
 The initial KTX writer emits an uncompressed KTX 1.1 file for one- to
 four-channel `UInt8` textures. KTX2, supercompression, and GPU block formats
 are deliberately deferred until their output policy is specified.
+
+## Model loading
+
+`ModelLoader::Load()` returns a `ModelHandle`
+(`std::shared_ptr<const LoadedModel>`), so passing a loaded model between
+systems never copies its geometry or texture bytes:
+
+```cpp
+auto model = vpgloader::ModelLoader::Load("assets/scene.glb");
+
+for (const auto& node : model->asset.nodes) {
+    for (const auto submeshIndex : node.submeshIndices) {
+        const auto& submesh = model->asset.submeshes[submeshIndex];
+        const auto& mesh = model->meshes[submesh.meshIndex];
+        // Interpret the node and mesh in the consuming scene or renderer.
+    }
+}
+```
+
+The result contains model-wide structure-of-arrays geometry, per-mesh ranges,
+materials, material texture-use metadata, decoded `TextureHandle` objects,
+the original node hierarchy, local transforms, submesh associations, and
+model-space bounds. Material texture members index `textureInfos`; each
+texture-info entry then identifies a texture plus its UV set and transform.
+
+External model textures use the same process-wide weak texture cache as
+`TextureLoader::LoadCached()`. Embedded compressed images in GLB/FBX files are
+extracted by Assimp as encoded bytes and then decoded by OpenImageIO through
+`TextureLoader::LoadFromMemory()`; Assimp is not used as an image decoder.
+Material parsing only registers texture requests. Once every material has
+been parsed, VPGLoader loads the registered textures as one bounded parallel
+batch. `ModelLoadOptions::maxTextureLoadConcurrency` controls the worker count;
+zero selects the machine's reported hardware concurrency.
+Set `ModelLoadOptions::loadEmbeddedTextures` to `false` for a path-only
+workflow. Embedded-only images then have no filesystem path and cannot be
+loaded. A missing texture records a message in both
+`ModelTextureAsset::loadError` and `LoadedModel::warnings` while leaving the
+remaining model usable. Set `ModelLoadOptions::failOnMissingTextures` when a
+missing texture should instead fail the whole load.
+
+The handle is immutable to consumers. Releasing the final `ModelHandle`
+releases geometry and its texture handles; texture pixel memory is freed once
+no other texture handle or bounded cache retains it.

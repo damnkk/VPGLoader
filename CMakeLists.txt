@@ -12,10 +12,11 @@ option(VPGLOADER_ENABLE_PACKAGING "Generate CPack package metadata" ON)
 find_package(assimp CONFIG REQUIRED)
 find_package(Ktx CONFIG REQUIRED)
 find_package(OpenImageIO CONFIG REQUIRED)
+find_package(Threads REQUIRED)
 
 add_library(VPGLoader
     src/VPGLoader.cpp
-    src/image/ImageLoader.cpp
+    src/model/Model.cpp
     src/model/ModelLoader.cpp
     src/texture/Texture.cpp
     src/texture/TextureCache.cpp
@@ -38,6 +39,8 @@ target_link_libraries(VPGLoader
         assimp::assimp
         KTX::ktx
         OpenImageIO::OpenImageIO
+    PRIVATE
+        Threads::Threads
 )
 
 if(BUILD_SHARED_LIBS)

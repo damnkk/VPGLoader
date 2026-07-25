@@ -2,6 +2,7 @@
 
 #include <VPGLoader/TextureCache.hpp>
 
+#include <OpenImageIO/filesystem.h>
 #include <OpenImageIO/imageio.h>
 
 #include <filesystem>
@@ -67,50 +68,30 @@ TextureColorSpace GetColorSpace(const OIIO::ImageSpec& spec)
     return TextureColorSpace::Unknown;
 }
 
-[[noreturn]] void ThrowImageError(const std::filesystem::path& path, const std::string& detail)
+[[noreturn]] void ThrowImageError(const std::string& source, const std::string& detail)
 {
-    throw TextureLoadError("Failed to load texture '" + path.string() + "': " + detail);
+    throw TextureLoadError("Failed to load texture '" + source + "': " + detail);
 }
 
-} // namespace
-
-TextureLoadError::TextureLoadError(const std::string& message)
-    : std::runtime_error(message)
+TextureHandle DecodeImage(std::unique_ptr<OIIO::ImageInput> input,
+                          TextureInfo info,
+                          const std::string& sourceName,
+                          const TextureLoadOptions& options)
 {
-}
-
-TextureHandle TextureLoader::Load(const std::filesystem::path& path,
-                                  const TextureLoadOptions& options)
-{
-    const std::string utf8Path = path.u8string();
-    std::unique_ptr<OIIO::ImageInput> input = OIIO::ImageInput::open(utf8Path);
-    if (!input) {
-        ThrowImageError(path, OIIO::geterror());
-    }
-
     const OIIO::ImageSpec baseSpec = input->spec_dimensions(0, 0);
     if (baseSpec.format == OIIO::TypeDesc::UNKNOWN || baseSpec.width <= 0 || baseSpec.height <= 0
         || baseSpec.depth <= 0 || baseSpec.nchannels <= 0 || baseSpec.nchannels > 4) {
-        ThrowImageError(path, "unsupported dimensions or channel count");
+        ThrowImageError(sourceName, "unsupported dimensions or channel count");
     }
     if (baseSpec.deep) {
-        ThrowImageError(path, "deep images are not supported by TextureLoader");
+        ThrowImageError(sourceName, "deep images are not supported by TextureLoader");
     }
 
     const OIIO::TypeDesc outputType = ToOiioType(options.outputComponentType);
     if (outputType == OIIO::TypeDesc::UNKNOWN) {
-        ThrowImageError(path, "unsupported output component type");
+        ThrowImageError(sourceName, "unsupported output component type");
     }
 
-    TextureInfo info;
-    info.sourcePath = ResolveSourcePath(path);
-    info.sourceFileName = info.sourcePath.filename().u8string();
-    info.sourceExtension = info.sourcePath.extension().u8string();
-    std::error_code fileSizeError;
-    info.sourceFileSize = std::filesystem::file_size(info.sourcePath, fileSizeError);
-    if (fileSizeError) {
-        info.sourceFileSize = 0;
-    }
     info.width = static_cast<std::uint32_t>(baseSpec.width);
     info.height = static_cast<std::uint32_t>(baseSpec.height);
     info.depth = static_cast<std::uint32_t>(baseSpec.depth);
@@ -126,7 +107,7 @@ TextureHandle TextureLoader::Load(const std::filesystem::path& path,
         }
         if (spec.width <= 0 || spec.height <= 0 || spec.depth <= 0 || spec.deep
             || spec.nchannels != baseSpec.nchannels) {
-            ThrowImageError(path, "incompatible mip level");
+            ThrowImageError(sourceName, "incompatible mip level");
         }
         mipSpecs.push_back(spec);
         if (!options.loadMipmaps) {
@@ -134,7 +115,7 @@ TextureHandle TextureLoader::Load(const std::filesystem::path& path,
         }
     }
     if (mipSpecs.empty()) {
-        ThrowImageError(path, "image contains no readable mip levels");
+        ThrowImageError(sourceName, "image contains no readable mip levels");
     }
 
     Texture::ByteBuffer imageData;
@@ -142,7 +123,7 @@ TextureHandle TextureLoader::Load(const std::filesystem::path& path,
     for (const OIIO::ImageSpec& spec : mipSpecs) {
         const std::size_t mipBytes = CheckedMipByteSize(spec, info.format);
         if (mipBytes > std::numeric_limits<std::size_t>::max() - totalBytes) {
-            ThrowImageError(path, "texture data exceeds addressable memory");
+            ThrowImageError(sourceName, "texture data exceeds addressable memory");
         }
         info.mipLevels.push_back({static_cast<std::uint32_t>(spec.width),
                                   static_cast<std::uint32_t>(spec.height),
@@ -155,17 +136,70 @@ TextureHandle TextureLoader::Load(const std::filesystem::path& path,
         const TextureMipLevel& mip = info.mipLevels[mipLevel];
         if (!input->read_image(0, static_cast<int>(mipLevel), 0, mipSpecs[mipLevel].nchannels,
                                outputType, imageData.data() + mip.byteOffset)) {
-            ThrowImageError(path, input->geterror());
+            ThrowImageError(sourceName, input->geterror());
         }
     }
 
     return Texture::Create(std::move(info), std::move(imageData));
 }
 
+} // namespace
+
+TextureLoadError::TextureLoadError(const std::string& message)
+    : std::runtime_error(message)
+{
+}
+
+TextureHandle TextureLoader::Load(const std::filesystem::path& path,
+                                  const TextureLoadOptions& options)
+{
+    const std::string utf8Path = path.u8string();
+    std::unique_ptr<OIIO::ImageInput> input = OIIO::ImageInput::open(utf8Path);
+    if (!input) {
+        ThrowImageError(utf8Path, OIIO::geterror());
+    }
+
+    TextureInfo info;
+    info.sourcePath = ResolveSourcePath(path);
+    info.sourceFileName = info.sourcePath.filename().u8string();
+    info.sourceExtension = info.sourcePath.extension().u8string();
+    std::error_code fileSizeError;
+    info.sourceFileSize = std::filesystem::file_size(info.sourcePath, fileSizeError);
+    if (fileSizeError) {
+        info.sourceFileSize = 0;
+    }
+    return DecodeImage(std::move(input), std::move(info), utf8Path, options);
+}
+
 TextureHandle TextureLoader::LoadCached(const std::filesystem::path& path,
                                         const TextureLoadOptions& options)
 {
     return TextureCache::Default().Load(path, options);
+}
+
+TextureHandle TextureLoader::LoadFromMemory(std::string_view name,
+                                            const std::uint8_t* data,
+                                            std::size_t size,
+                                            const TextureLoadOptions& options)
+{
+    const std::string sourceName = name.empty() ? std::string("embedded-image") : std::string(name);
+    if (data == nullptr || size == 0) {
+        ThrowImageError(sourceName, "encoded image data is empty");
+    }
+
+    OIIO::Filesystem::IOMemReader memoryReader(data, size);
+    std::unique_ptr<OIIO::ImageInput> input =
+        OIIO::ImageInput::open(sourceName, nullptr, &memoryReader);
+    if (!input) {
+        ThrowImageError(sourceName, OIIO::geterror());
+    }
+
+    TextureInfo info;
+    const std::filesystem::path sourceHint(sourceName);
+    info.sourceFileName = sourceHint.filename().u8string();
+    info.sourceExtension = sourceHint.extension().u8string();
+    info.sourceFileSize = size;
+    return DecodeImage(std::move(input), std::move(info), sourceName, options);
 }
 
 } // namespace vpgloader
