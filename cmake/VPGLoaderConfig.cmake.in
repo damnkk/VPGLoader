@@ -1,0 +1,10 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+
+find_dependency(assimp CONFIG REQUIRED)
+find_dependency(OpenImageIO CONFIG REQUIRED)
+
+include("${CMAKE_CURRENT_LIST_DIR}/VPGLoaderTargets.cmake")
+
+check_required_components(VPGLoader)
