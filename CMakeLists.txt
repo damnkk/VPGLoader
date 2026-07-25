@@ -10,12 +10,14 @@ option(VPGLOADER_BUILD_EXAMPLES "Build VPGLoader example programs" OFF)
 option(VPGLOADER_ENABLE_PACKAGING "Generate CPack package metadata" ON)
 
 find_package(assimp CONFIG REQUIRED)
+find_package(Ktx CONFIG REQUIRED)
 find_package(OpenImageIO CONFIG REQUIRED)
 
 add_library(VPGLoader
     src/VPGLoader.cpp
     src/image/ImageLoader.cpp
     src/model/ModelLoader.cpp
+    src/texture/TextureConverter.cpp
 )
 add_library(VPGLoader::VPGLoader ALIAS VPGLoader)
 
@@ -28,6 +30,7 @@ target_include_directories(VPGLoader
 target_link_libraries(VPGLoader
     PUBLIC
         assimp::assimp
+        KTX::ktx
         OpenImageIO::OpenImageIO
 )
 

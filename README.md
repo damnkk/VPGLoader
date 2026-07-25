@@ -1,9 +1,9 @@
 # VPGLoader
 
 VPGLoader is a C++ resource-loading library. The first release establishes the
-build and dependency foundation for image loading (OpenImageIO) and model
-loading (Assimp); the loading APIs and implementations will follow in a later
-iteration.
+build and dependency foundation for image loading (OpenImageIO), model loading
+(Assimp), and future KTX texture conversion (KTX-Software). The loading and
+conversion APIs and implementations will follow in a later iteration.
 
 ## Prerequisites
 
@@ -73,6 +73,7 @@ through the same vcpkg toolchain.
 include/VPGLoader/  Public library headers
 src/image/          Future OpenImageIO-backed image loader
 src/model/          Future Assimp-backed model loader
+src/texture/        Future KTX-backed texture converter
 examples/           Optional CMake example
 cmake/              Installed-package configuration template
 ```
