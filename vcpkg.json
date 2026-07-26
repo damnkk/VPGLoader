@@ -4,6 +4,7 @@
   "description": "C++ resource-loading library with image and model loading backends.",
   "dependencies": [
     "assimp",
+    "glfw3",
     "ktx",
     "openimageio"
   ]

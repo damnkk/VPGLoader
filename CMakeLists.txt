@@ -6,7 +6,7 @@ include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
 
 option(BUILD_SHARED_LIBS "Build VPGLoader as a shared library" OFF)
-option(VPGLOADER_BUILD_EXAMPLES "Build VPGLoader example programs" OFF)
+option(VPGLOADER_BUILD_SAMPLE "Build the Vulkan model-viewer sample" ON)
 option(VPGLOADER_ENABLE_PACKAGING "Generate CPack package metadata" ON)
 
 find_package(assimp CONFIG REQUIRED)
@@ -55,7 +55,7 @@ set_target_properties(VPGLoader PROPERTIES
     VISIBILITY_INLINES_HIDDEN YES
 )
 
-if(VPGLOADER_BUILD_EXAMPLES)
+if(VPGLOADER_BUILD_SAMPLE)
     add_subdirectory(examples)
 endif()
 

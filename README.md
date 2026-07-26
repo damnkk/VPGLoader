@@ -37,9 +37,26 @@ To build the example executable, enable it at configure time:
 cmake -S . -B build/debug-example -G "NMake Makefiles" `
   -DCMAKE_TOOLCHAIN_FILE="$env:VCPKG_ROOT/scripts/buildsystems/vcpkg.cmake" `
   -DCMAKE_BUILD_TYPE=Debug `
-  -DVPGLOADER_BUILD_EXAMPLES=ON
+  -DVPGLOADER_BUILD_SAMPLE=ON
 cmake --build build/debug-example
 ```
+
+The Vulkan viewer example additionally requires a Vulkan SDK with `glslc`.
+GLFW is restored through `vcpkg.json`; Vulkan remains an example-only system
+dependency and is not linked into VPGLoader itself.
+
+Run the viewer with any model format supported by the model loader:
+
+```powershell
+.\build\debug-example\examples\vpgloader-vulkan-viewer.exe `
+  D:\assets\models\viking_room.obj
+```
+
+The viewer loads the complete CPU model through `ModelLoader`, traverses its
+node hierarchy, uploads geometry and base-color textures to Vulkan, and
+automatically orbits the model-space bounds. Press Escape or close the window
+to exit. The optional `--frames N` argument limits the render loop for smoke
+tests.
 
 For a shared Release library, use a separate build directory and set
 `BUILD_SHARED_LIBS` to `ON`:
@@ -72,7 +89,7 @@ and KTX-Software through the same vcpkg toolchain.
 include/VPGLoader/  Public library headers
 src/model/          Assimp-backed CPU model loader
 src/texture/        OpenImageIO loading, cache, and KTX conversion
-examples/           Optional CMake example
+examples/           Optional Vulkan model-viewer example and GLSL shaders
 cmake/              Installed-package configuration template
 ```
 
