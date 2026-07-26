@@ -118,13 +118,15 @@ vpgloader::TextureCache previewCache({ 128 * 1024 * 1024 });
 auto texture = previewCache.Load("assets/albedo.png");
 
 // No pixel copy: the converter reads from the same immutable Texture.
-vpgloader::texture::TextureConverter::SaveAsKtx(texture, "assets/albedo.ktx");
+vpgloader::texture::TextureConverter::SaveAsKtx2(
+    texture, "assets/albedo.ktx2");
 ```
 
-The KTX writer emits an uncompressed KTX 1.1 file for one- to four-channel
-`UInt8`, `UInt16`, `Float16`, and `Float32` textures. KTX2, supercompression,
-and GPU block formats are deliberately deferred until their output policy is
-specified.
+The primary writer emits an uncompressed KTX 2.0 file with an explicit
+`VkFormat` for one- to four-channel `UInt8`, `UInt16`, `Float16`, and
+`Float32` textures. The legacy `SaveAsKtx()` KTX 1.1 writer and loader remain
+available for existing assets. KTX2 supercompression and GPU block formats
+are deliberately deferred until their output policy is specified.
 
 ## Model loading
 
@@ -174,7 +176,7 @@ no other texture handle or bounded cache retains it.
 Export an already loaded CPU model with `ModelExporter`. Geometry, mesh
 ranges, nodes, transforms, materials, texture-use metadata, bounds, and
 warnings are written to a versioned little-endian binary file. Each loaded
-texture is written as an uncompressed KTX file beside it:
+texture is written as an uncompressed KTX2 file beside it:
 
 ```cpp
 #include <VPGLoader/VPGLoader.hpp>
@@ -186,11 +188,11 @@ vpgloader::ModelExporter::Save(model, "cache/scene.vpgmodel");
 The generated texture filenames include the model name and texture index, so
 textures with identical source filenames do not collide. A `.vpgmodel` stores
 only sibling texture filenames; moving a native model therefore means moving
-its generated KTX files with it.
+its generated KTX2 files with it.
 
 `ModelLoader::Load()` auto-detects the extension and reads the native binary
 without invoking Assimp or OpenImageIO. Geometry arrays are restored with
-contiguous block reads, while the KTX files are decoded directly by
+contiguous block reads, while the KTX2 files are decoded directly by
 KTX-Software. The existing texture cache, parallel loading limit,
 `loadTextures`, and `failOnMissingTextures` options continue to apply:
 

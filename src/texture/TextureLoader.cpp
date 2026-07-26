@@ -30,6 +30,27 @@ constexpr ktx_uint32_t GlFloat = 0x1406;
 constexpr ktx_uint32_t GlSrgb8 = 0x8C41;
 constexpr ktx_uint32_t GlSrgb8Alpha8 = 0x8C43;
 
+constexpr ktx_uint32_t VkFormatR8Unorm = 9;
+constexpr ktx_uint32_t VkFormatR8Srgb = 15;
+constexpr ktx_uint32_t VkFormatR8g8Unorm = 16;
+constexpr ktx_uint32_t VkFormatR8g8Srgb = 22;
+constexpr ktx_uint32_t VkFormatR8g8b8Unorm = 23;
+constexpr ktx_uint32_t VkFormatR8g8b8Srgb = 29;
+constexpr ktx_uint32_t VkFormatR8g8b8a8Unorm = 37;
+constexpr ktx_uint32_t VkFormatR8g8b8a8Srgb = 43;
+constexpr ktx_uint32_t VkFormatR16Unorm = 70;
+constexpr ktx_uint32_t VkFormatR16Sfloat = 76;
+constexpr ktx_uint32_t VkFormatR16g16Unorm = 77;
+constexpr ktx_uint32_t VkFormatR16g16Sfloat = 83;
+constexpr ktx_uint32_t VkFormatR16g16b16Unorm = 84;
+constexpr ktx_uint32_t VkFormatR16g16b16Sfloat = 90;
+constexpr ktx_uint32_t VkFormatR16g16b16a16Unorm = 91;
+constexpr ktx_uint32_t VkFormatR16g16b16a16Sfloat = 97;
+constexpr ktx_uint32_t VkFormatR32Sfloat = 100;
+constexpr ktx_uint32_t VkFormatR32g32Sfloat = 103;
+constexpr ktx_uint32_t VkFormatR32g32b32Sfloat = 106;
+constexpr ktx_uint32_t VkFormatR32g32b32a32Sfloat = 109;
+
 std::string LowerAscii(std::string value)
 {
     for (char& character : value) {
@@ -107,8 +128,8 @@ struct KtxTextureDeleter {
     }
 };
 
-TextureComponentType GetKtxComponentType(ktx_uint32_t glType,
-                                         const std::string& sourceName)
+TextureComponentType GetKtx1ComponentType(ktx_uint32_t glType,
+                                          const std::string& sourceName)
 {
     switch (glType) {
     case GlUnsignedByte:
@@ -124,8 +145,8 @@ TextureComponentType GetKtxComponentType(ktx_uint32_t glType,
     }
 }
 
-std::uint8_t GetKtxChannelCount(ktx_uint32_t glFormat,
-                                const std::string& sourceName)
+std::uint8_t GetKtx1ChannelCount(ktx_uint32_t glFormat,
+                                 const std::string& sourceName)
 {
     switch (glFormat) {
     case GlRed:
@@ -139,6 +160,110 @@ std::uint8_t GetKtxChannelCount(ktx_uint32_t glFormat,
     default:
         ThrowImageError(sourceName, "unsupported KTX channel layout");
     }
+}
+
+struct KtxFormatInfo {
+    TextureFormat format;
+    TextureColorSpace colorSpace = TextureColorSpace::Unknown;
+};
+
+KtxFormatInfo GetKtx1Format(const ktxTexture1& texture,
+                            const std::string& sourceName)
+{
+    KtxFormatInfo result;
+    result.format.componentType =
+        GetKtx1ComponentType(texture.glType, sourceName);
+    result.format.channels =
+        GetKtx1ChannelCount(texture.glFormat, sourceName);
+    result.colorSpace =
+        texture.glInternalformat == GlSrgb8
+            || texture.glInternalformat == GlSrgb8Alpha8
+        ? TextureColorSpace::SRGB
+        : TextureColorSpace::Linear;
+    return result;
+}
+
+KtxFormatInfo GetKtx2Format(ktxTexture2& texture,
+                            const std::string& sourceName)
+{
+    if (ktxTexture2_NeedsTranscoding(&texture)) {
+        ThrowImageError(
+            sourceName,
+            "Basis Universal KTX2 textures require transcoding before CPU loading");
+    }
+
+    KtxFormatInfo result;
+    switch (texture.vkFormat) {
+    case VkFormatR8Unorm:
+    case VkFormatR8Srgb:
+        result.format = {TextureComponentType::UInt8, 1};
+        break;
+    case VkFormatR8g8Unorm:
+    case VkFormatR8g8Srgb:
+        result.format = {TextureComponentType::UInt8, 2};
+        break;
+    case VkFormatR8g8b8Unorm:
+    case VkFormatR8g8b8Srgb:
+        result.format = {TextureComponentType::UInt8, 3};
+        break;
+    case VkFormatR8g8b8a8Unorm:
+    case VkFormatR8g8b8a8Srgb:
+        result.format = {TextureComponentType::UInt8, 4};
+        break;
+    case VkFormatR16Unorm:
+        result.format = {TextureComponentType::UInt16, 1};
+        break;
+    case VkFormatR16g16Unorm:
+        result.format = {TextureComponentType::UInt16, 2};
+        break;
+    case VkFormatR16g16b16Unorm:
+        result.format = {TextureComponentType::UInt16, 3};
+        break;
+    case VkFormatR16g16b16a16Unorm:
+        result.format = {TextureComponentType::UInt16, 4};
+        break;
+    case VkFormatR16Sfloat:
+        result.format = {TextureComponentType::Float16, 1};
+        break;
+    case VkFormatR16g16Sfloat:
+        result.format = {TextureComponentType::Float16, 2};
+        break;
+    case VkFormatR16g16b16Sfloat:
+        result.format = {TextureComponentType::Float16, 3};
+        break;
+    case VkFormatR16g16b16a16Sfloat:
+        result.format = {TextureComponentType::Float16, 4};
+        break;
+    case VkFormatR32Sfloat:
+        result.format = {TextureComponentType::Float32, 1};
+        break;
+    case VkFormatR32g32Sfloat:
+        result.format = {TextureComponentType::Float32, 2};
+        break;
+    case VkFormatR32g32b32Sfloat:
+        result.format = {TextureComponentType::Float32, 3};
+        break;
+    case VkFormatR32g32b32a32Sfloat:
+        result.format = {TextureComponentType::Float32, 4};
+        break;
+    default:
+        ThrowImageError(
+            sourceName,
+            "unsupported KTX2 VkFormat " + std::to_string(texture.vkFormat));
+    }
+
+    switch (ktxTexture2_GetTransferFunction_e(&texture)) {
+    case KHR_DF_TRANSFER_SRGB:
+        result.colorSpace = TextureColorSpace::SRGB;
+        break;
+    case KHR_DF_TRANSFER_LINEAR:
+        result.colorSpace = TextureColorSpace::Linear;
+        break;
+    default:
+        result.colorSpace = TextureColorSpace::Unknown;
+        break;
+    }
+    return result;
 }
 
 std::size_t CheckedKtxMultiply(std::size_t left,
@@ -166,9 +291,6 @@ TextureHandle LoadKtx(const std::filesystem::path& path,
     }
     std::unique_ptr<ktxTexture, KtxTextureDeleter> texture(rawTexture);
 
-    if (texture->classId != ktxTexture1_c) {
-        ThrowImageError(sourceName, "only uncompressed KTX 1.1 is supported");
-    }
     if (texture->isCompressed || texture->isArray || texture->isCubemap
         || texture->numLayers != 1 || texture->numFaces != 1
         || texture->numLevels == 0 || texture->baseWidth == 0
@@ -179,11 +301,19 @@ TextureHandle LoadKtx(const std::filesystem::path& path,
             "unsupported compressed, array, cubemap, or empty KTX texture");
     }
 
-    const auto* texture1 = reinterpret_cast<const ktxTexture1*>(texture.get());
-    TextureFormat format;
-    format.componentType =
-        GetKtxComponentType(texture1->glType, sourceName);
-    format.channels = GetKtxChannelCount(texture1->glFormat, sourceName);
+    KtxFormatInfo ktxFormat;
+    if (texture->classId == ktxTexture1_c) {
+        ktxFormat = GetKtx1Format(
+            *reinterpret_cast<const ktxTexture1*>(texture.get()),
+            sourceName);
+    } else if (texture->classId == ktxTexture2_c) {
+        ktxFormat = GetKtx2Format(
+            *reinterpret_cast<ktxTexture2*>(texture.get()),
+            sourceName);
+    } else {
+        ThrowImageError(sourceName, "unknown KTX container version");
+    }
+    const TextureFormat format = ktxFormat.format;
     if (format.componentType != options.outputComponentType) {
         ThrowImageError(
             sourceName,
@@ -204,11 +334,7 @@ TextureHandle LoadKtx(const std::filesystem::path& path,
     info.height = texture->baseHeight;
     info.depth = texture->baseDepth;
     info.format = format;
-    info.colorSpace =
-        texture1->glInternalformat == GlSrgb8
-            || texture1->glInternalformat == GlSrgb8Alpha8
-        ? TextureColorSpace::SRGB
-        : TextureColorSpace::Linear;
+    info.colorSpace = ktxFormat.colorSpace;
 
     std::uint32_t maximumLevels = 1;
     for (std::uint32_t dimension =
@@ -256,8 +382,13 @@ TextureHandle LoadKtx(const std::filesystem::path& path,
 
         const std::size_t tightRowSize =
             static_cast<std::size_t>(mip.width) * format.bytesPerPixel();
+        // KTX1 rows follow GL_UNPACK_ALIGNMENT. KTX2 removed row padding,
+        // while libktx's generic GetRowPitch still reports the GL-aligned
+        // pitch for uncompressed three-channel formats.
         const std::size_t rowPitch =
-            ktxTexture_GetRowPitch(texture.get(), level);
+            texture->classId == ktxTexture2_c
+            ? tightRowSize
+            : ktxTexture_GetRowPitch(texture.get(), level);
         std::size_t storedSize =
             CheckedKtxMultiply(rowPitch, mip.height, sourceName);
         storedSize =
@@ -265,7 +396,15 @@ TextureHandle LoadKtx(const std::filesystem::path& path,
         if (rowPitch < tightRowSize
             || sourceOffset > texture->dataSize
             || storedSize > texture->dataSize - sourceOffset) {
-            ThrowImageError(sourceName, "invalid KTX mip layout");
+            ThrowImageError(
+                sourceName,
+                "invalid KTX mip layout at level " + std::to_string(level)
+                    + " (rowPitch=" + std::to_string(rowPitch)
+                    + ", tightRowSize=" + std::to_string(tightRowSize)
+                    + ", offset=" + std::to_string(sourceOffset)
+                    + ", storedSize=" + std::to_string(storedSize)
+                    + ", dataSize=" + std::to_string(texture->dataSize)
+                    + ")");
         }
 
         const std::uint8_t* source = texture->pData + sourceOffset;
@@ -369,7 +508,9 @@ TextureLoadError::TextureLoadError(const std::string& message)
 TextureHandle TextureLoader::Load(const std::filesystem::path& path,
                                   const TextureLoadOptions& options)
 {
-    if (LowerAscii(path.extension().u8string()) == ".ktx") {
+    const std::string extension =
+        LowerAscii(path.extension().u8string());
+    if (extension == ".ktx" || extension == ".ktx2") {
         return LoadKtx(path, options);
     }
 

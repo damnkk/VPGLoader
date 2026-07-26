@@ -17,7 +17,7 @@ public:
 class VPGLOADER_API ModelExporter final {
 public:
     // Serializes the complete CPU-side model into a versioned .vpgmodel file.
-    // Loaded textures are written as sibling KTX files and referenced by
+    // Loaded textures are written as sibling KTX2 files and referenced by
     // filename from the model file.
     static void Save(const LoadedModel& model,
                      const std::filesystem::path& destination);

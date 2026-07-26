@@ -584,12 +584,12 @@ std::vector<SerializedTexture> WriteTextures(
         std::ostringstream fileName;
         fileName << modelStem << "_texture_" << std::setw(4)
                  << std::setfill('0') << index << '_'
-                 << SanitizeFileStem(preferredStem) << ".ktx";
+                 << SanitizeFileStem(preferredStem) << ".ktx2";
 
         SerializedTexture& record = serialized[index];
         record.fileName = fileName.str();
         record.componentType = asset.texture->info().format.componentType;
-        texture::TextureConverter::SaveAsKtx(
+        texture::TextureConverter::SaveAsKtx2(
             asset.texture,
             destination.parent_path() / std::filesystem::u8path(record.fileName));
     }

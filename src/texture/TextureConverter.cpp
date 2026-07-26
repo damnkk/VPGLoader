@@ -29,6 +29,29 @@ constexpr ktx_uint32_t GlRgba32f = 0x8814;
 constexpr ktx_uint32_t GlSrgb8 = 0x8C41;
 constexpr ktx_uint32_t GlSrgb8Alpha8 = 0x8C43;
 
+// VkFormat values are part of the stable Vulkan ABI. Keeping these local
+// avoids making the CPU-only VPGLoader target depend on a Vulkan SDK.
+constexpr ktx_uint32_t VkFormatR8Unorm = 9;
+constexpr ktx_uint32_t VkFormatR8Srgb = 15;
+constexpr ktx_uint32_t VkFormatR8g8Unorm = 16;
+constexpr ktx_uint32_t VkFormatR8g8Srgb = 22;
+constexpr ktx_uint32_t VkFormatR8g8b8Unorm = 23;
+constexpr ktx_uint32_t VkFormatR8g8b8Srgb = 29;
+constexpr ktx_uint32_t VkFormatR8g8b8a8Unorm = 37;
+constexpr ktx_uint32_t VkFormatR8g8b8a8Srgb = 43;
+constexpr ktx_uint32_t VkFormatR16Unorm = 70;
+constexpr ktx_uint32_t VkFormatR16Sfloat = 76;
+constexpr ktx_uint32_t VkFormatR16g16Unorm = 77;
+constexpr ktx_uint32_t VkFormatR16g16Sfloat = 83;
+constexpr ktx_uint32_t VkFormatR16g16b16Unorm = 84;
+constexpr ktx_uint32_t VkFormatR16g16b16Sfloat = 90;
+constexpr ktx_uint32_t VkFormatR16g16b16a16Unorm = 91;
+constexpr ktx_uint32_t VkFormatR16g16b16a16Sfloat = 97;
+constexpr ktx_uint32_t VkFormatR32Sfloat = 100;
+constexpr ktx_uint32_t VkFormatR32g32Sfloat = 103;
+constexpr ktx_uint32_t VkFormatR32g32b32Sfloat = 106;
+constexpr ktx_uint32_t VkFormatR32g32b32a32Sfloat = 109;
+
 ktx_uint32_t ToGlInternalFormat(const TextureFormat& format,
                                 TextureColorSpace colorSpace)
 {
@@ -62,8 +85,65 @@ ktx_uint32_t ToGlInternalFormat(const TextureFormat& format,
     return formats[typeIndex][format.channels - 1];
 }
 
+ktx_uint32_t ToVkFormat(const TextureFormat& format,
+                        TextureColorSpace colorSpace)
+{
+    if (!format.isValid()) {
+        throw std::invalid_argument(
+            "SaveAsKtx2 requires between one and four channels.");
+    }
+
+    const ktx_uint32_t uint8Linear[] = {
+        VkFormatR8Unorm,
+        VkFormatR8g8Unorm,
+        VkFormatR8g8b8Unorm,
+        VkFormatR8g8b8a8Unorm,
+    };
+    const ktx_uint32_t uint8Srgb[] = {
+        VkFormatR8Srgb,
+        VkFormatR8g8Srgb,
+        VkFormatR8g8b8Srgb,
+        VkFormatR8g8b8a8Srgb,
+    };
+    const ktx_uint32_t uint16[] = {
+        VkFormatR16Unorm,
+        VkFormatR16g16Unorm,
+        VkFormatR16g16b16Unorm,
+        VkFormatR16g16b16a16Unorm,
+    };
+    const ktx_uint32_t float16[] = {
+        VkFormatR16Sfloat,
+        VkFormatR16g16Sfloat,
+        VkFormatR16g16b16Sfloat,
+        VkFormatR16g16b16a16Sfloat,
+    };
+    const ktx_uint32_t float32[] = {
+        VkFormatR32Sfloat,
+        VkFormatR32g32Sfloat,
+        VkFormatR32g32b32Sfloat,
+        VkFormatR32g32b32a32Sfloat,
+    };
+    const std::size_t channelIndex = format.channels - 1;
+
+    switch (format.componentType) {
+    case TextureComponentType::UInt8:
+        return colorSpace == TextureColorSpace::SRGB
+            ? uint8Srgb[channelIndex]
+            : uint8Linear[channelIndex];
+    case TextureComponentType::UInt16:
+        return uint16[channelIndex];
+    case TextureComponentType::Float16:
+        return float16[channelIndex];
+    case TextureComponentType::Float32:
+        return float32[channelIndex];
+    }
+    throw std::invalid_argument(
+        "SaveAsKtx2 received an unsupported component type.");
+}
+
+template <typename T>
 struct KtxTextureDeleter {
-    void operator()(ktxTexture1* texture) const noexcept
+    void operator()(T* texture) const noexcept
     {
         if (texture != nullptr) {
             ktxTexture_Destroy(ktxTexture(texture));
@@ -78,7 +158,76 @@ void CheckKtxResult(KTX_error_code result, const std::string& action)
     }
 }
 
+void SetMipData(ktxTexture* destination, const Texture& source)
+{
+    const TextureInfo& info = source.info();
+    for (std::size_t mipLevel = 0; mipLevel < info.mipLevels.size(); ++mipLevel) {
+        const TextureMipLevel& mip = info.mipLevels[mipLevel];
+        CheckKtxResult(
+            ktxTexture_SetImageFromMemory(
+                destination,
+                static_cast<ktx_uint32_t>(mipLevel),
+                0,
+                0,
+                source.data() + mip.byteOffset,
+                mip.byteSize),
+            "Unable to set KTX mip level");
+    }
+}
+
 } // namespace
+
+void TextureConverter::SaveAsKtx2(
+    const Texture& texture,
+    const std::filesystem::path& destination)
+{
+    const TextureInfo& info = texture.info();
+    if (info.mipLevels.empty()) {
+        throw std::invalid_argument("Cannot save a texture without mip levels.");
+    }
+
+    ktxTextureCreateInfo createInfo{};
+    createInfo.vkFormat = ToVkFormat(info.format, info.colorSpace);
+    createInfo.baseWidth = info.width;
+    createInfo.baseHeight = info.height;
+    createInfo.baseDepth = info.depth;
+    createInfo.numDimensions =
+        info.depth > 1 ? 3U : (info.height > 1 ? 2U : 1U);
+    createInfo.numLevels =
+        static_cast<ktx_uint32_t>(info.mipLevels.size());
+    createInfo.numLayers = 1;
+    createInfo.numFaces = 1;
+    createInfo.isArray = KTX_FALSE;
+    createInfo.generateMipmaps = KTX_FALSE;
+
+    ktxTexture2* rawTexture = nullptr;
+    CheckKtxResult(
+        ktxTexture2_Create(
+            &createInfo,
+            KTX_TEXTURE_CREATE_ALLOC_STORAGE,
+            &rawTexture),
+        "Unable to create KTX2 texture");
+    std::unique_ptr<ktxTexture2, KtxTextureDeleter<ktxTexture2>>
+        ktxTextureHandle(rawTexture);
+
+    SetMipData(ktxTexture(ktxTextureHandle.get()), texture);
+
+    const std::string destinationUtf8 = destination.u8string();
+    CheckKtxResult(
+        ktxTexture2_WriteToNamedFile(
+            ktxTextureHandle.get(), destinationUtf8.c_str()),
+        "Unable to write KTX2 file");
+}
+
+void TextureConverter::SaveAsKtx2(
+    const TextureHandle& texture,
+    const std::filesystem::path& destination)
+{
+    if (!texture) {
+        throw std::invalid_argument("Cannot save an empty TextureHandle.");
+    }
+    SaveAsKtx2(*texture, destination);
+}
 
 void TextureConverter::SaveAsKtx(const Texture& texture,
                                  const std::filesystem::path& destination)
@@ -104,16 +253,10 @@ void TextureConverter::SaveAsKtx(const Texture& texture,
     ktxTexture1* rawTexture = nullptr;
     CheckKtxResult(ktxTexture1_Create(&createInfo, KTX_TEXTURE_CREATE_ALLOC_STORAGE, &rawTexture),
                    "Unable to create KTX texture");
-    std::unique_ptr<ktxTexture1, KtxTextureDeleter> ktxTextureHandle(rawTexture);
+    std::unique_ptr<ktxTexture1, KtxTextureDeleter<ktxTexture1>>
+        ktxTextureHandle(rawTexture);
 
-    for (std::size_t mipLevel = 0; mipLevel < info.mipLevels.size(); ++mipLevel) {
-        const TextureMipLevel& mip = info.mipLevels[mipLevel];
-        CheckKtxResult(ktxTexture_SetImageFromMemory(
-                           ktxTexture(ktxTextureHandle.get()), static_cast<ktx_uint32_t>(mipLevel), 0, 0,
-                           texture.data() + mip.byteOffset, mip.byteSize),
-                       "Unable to set KTX mip level");
-    }
-
+    SetMipData(ktxTexture(ktxTextureHandle.get()), texture);
     const std::string destinationUtf8 = destination.u8string();
     CheckKtxResult(ktxTexture_WriteToNamedFile(ktxTexture(ktxTextureHandle.get()),
                                                 destinationUtf8.c_str()),
