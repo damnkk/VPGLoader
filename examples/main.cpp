@@ -13,6 +13,9 @@ void PrintUsage(const char* executable)
         << "Usage: " << executable << " <model-path> [--frames N]\n"
         << "\n"
         << "The camera automatically orbits the loaded model.\n"
+        << "Use the mouse wheel to move the camera closer or farther away.\n"
+        << "Press E and enter a path in this console to export the current "
+           "model.\n"
         << "--frames is optional and is useful for automated smoke tests.\n";
 }
 

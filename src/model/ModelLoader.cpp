@@ -1,5 +1,7 @@
 #include <VPGLoader/ModelLoader.hpp>
 
+#include "ModelBinary.hpp"
+
 #include <assimp/GltfMaterial.h>
 #include <assimp/Importer.hpp>
 #include <assimp/config.h>
@@ -845,6 +847,11 @@ ModelHandle ModelLoader::Load(const std::filesystem::path& path,
     }
     if (!std::isfinite(options.globalScale) || options.globalScale <= 0.0f) {
         throw ModelLoadError("Model globalScale must be finite and greater than zero.");
+    }
+    if (options.format == ModelFileFormat::VpgModel
+        || (options.format == ModelFileFormat::Auto
+            && detail::IsVpgModelPath(path))) {
+        return detail::LoadVpgModel(path, options);
     }
 
     const std::filesystem::path sourcePath = ResolvePath(path);

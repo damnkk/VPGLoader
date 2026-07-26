@@ -17,6 +17,8 @@ find_package(Threads REQUIRED)
 add_library(VPGLoader
     src/VPGLoader.cpp
     src/model/Model.cpp
+    src/model/ModelBinary.cpp
+    src/model/ModelExporter.cpp
     src/model/ModelLoader.cpp
     src/texture/Texture.cpp
     src/texture/TextureCache.cpp

@@ -3,6 +3,7 @@
 
 #include "VulkanViewer.hpp"
 
+#include <VPGLoader/ModelExporter.hpp>
 #include <VPGLoader/ModelLoader.hpp>
 
 #include <algorithm>
@@ -28,6 +29,9 @@ constexpr std::uint32_t WindowWidth = 1280;
 constexpr std::uint32_t WindowHeight = 720;
 constexpr std::size_t FramesInFlight = 2;
 constexpr float Pi = 3.14159265358979323846f;
+constexpr float MinimumCameraZoom = 0.03f;
+constexpr float MaximumCameraZoom = 20.0f;
+constexpr float ScrollZoomStep = 0.85f;
 
 void Check(VkResult result, const char* operation)
 {
@@ -208,12 +212,18 @@ struct VulkanViewer::Impl {
         LoadModel();
         InitWindow();
         InitVulkan();
+        std::cout
+            << "Press E in the viewer to export the current model.\n";
 
         const auto start = std::chrono::steady_clock::now();
         std::uint64_t renderedFrames = 0;
         while (!glfwWindowShouldClose(window) &&
                (frameLimit == 0 || renderedFrames < frameLimit)) {
             glfwPollEvents();
+            if (exportRequested) {
+                exportRequested = false;
+                ExportCurrentModel();
+            }
             if (glfwGetKey(window, GLFW_KEY_ESCAPE) == GLFW_PRESS) {
                 glfwSetWindowShouldClose(window, GLFW_TRUE);
             }
@@ -228,6 +238,63 @@ struct VulkanViewer::Impl {
         return 0;
     }
 
+    void ExportCurrentModel()
+    {
+        std::cout
+            << "\nExport path (.vpgmodel file or existing directory; "
+               "empty cancels): "
+            << std::flush;
+
+        std::string input;
+        if (!std::getline(std::cin, input)) {
+            std::cin.clear();
+            std::cerr << "Export canceled: unable to read the path.\n";
+            return;
+        }
+        if (input.empty()) {
+            std::cout << "Export canceled.\n";
+            return;
+        }
+        if (input.size() >= 2 && input.front() == '"'
+            && input.back() == '"') {
+            input = input.substr(1, input.size() - 2);
+        }
+        if (input.empty()) {
+            std::cout << "Export canceled.\n";
+            return;
+        }
+
+        const bool directoryHint =
+            input.back() == '/' || input.back() == '\\';
+        std::filesystem::path destination(input);
+        std::error_code statusError;
+        if (directoryHint
+            || std::filesystem::is_directory(destination, statusError)) {
+            std::string fileName = modelPath.stem().u8string();
+            if (fileName.empty()) {
+                fileName = "model";
+            }
+            destination /= std::filesystem::u8path(
+                fileName + ".vpgmodel");
+        } else if (destination.extension().empty()) {
+            destination += ".vpgmodel";
+        } else if (destination.extension() != ".vpgmodel") {
+            destination.replace_extension(".vpgmodel");
+        }
+
+        try {
+            std::cout << "Exporting current model to: "
+                      << destination << '\n';
+            vpgloader::ModelExporter::Save(model, destination);
+            std::cout
+                << "Export complete. Reload it with:\n  "
+                << "vpgloader-vulkan-viewer.exe \""
+                << destination.string() << "\"\n";
+        } catch (const std::exception& error) {
+            std::cerr << "Model export failed: " << error.what() << '\n';
+        }
+    }
+
     void LoadModel()
     {
         if (!std::filesystem::exists(modelPath)) {
@@ -236,7 +303,14 @@ struct VulkanViewer::Impl {
         }
 
         std::cout << "Loading model: " << modelPath << '\n';
+        const auto loadStart = std::chrono::steady_clock::now();
         model = vpgloader::ModelLoader::Load(modelPath);
+        const double loadMilliseconds =
+            std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - loadStart)
+                .count();
+        std::cout << "Model load completed in "
+                  << loadMilliseconds << " ms\n";
         if (!model || model->geometry.positions.empty() ||
             model->geometry.indices.empty()) {
             throw std::runtime_error(
@@ -362,6 +436,37 @@ struct VulkanViewer::Impl {
                     glfwGetWindowUserPointer(callbackWindow));
                 self->framebufferResized = true;
             });
+        glfwSetKeyCallback(
+            window,
+            [](GLFWwindow* callbackWindow,
+               int key,
+               int,
+               int action,
+               int) {
+                if (key == GLFW_KEY_E && action == GLFW_PRESS) {
+                    auto* self = static_cast<Impl*>(
+                        glfwGetWindowUserPointer(callbackWindow));
+                    self->exportRequested = true;
+                }
+            });
+        glfwSetScrollCallback(
+            window,
+            [](GLFWwindow* callbackWindow, double, double yOffset) {
+                auto* self = static_cast<Impl*>(
+                    glfwGetWindowUserPointer(callbackWindow));
+                self->AdjustCameraZoom(yOffset);
+            });
+    }
+
+    void AdjustCameraZoom(double scrollSteps)
+    {
+        const double limitedSteps =
+            std::max(-20.0, std::min(20.0, scrollSteps));
+        cameraZoom *= static_cast<float>(
+            std::pow(ScrollZoomStep, limitedSteps));
+        cameraZoom = std::max(
+            MinimumCameraZoom,
+            std::min(MaximumCameraZoom, cameraZoom));
     }
 
     void InitVulkan()
@@ -1670,14 +1775,16 @@ struct VulkanViewer::Impl {
 
     void UpdateCamera(float elapsedSeconds)
     {
-        const float distance = orbitRadius * 2.8f;
+        const float distance = orbitRadius * 2.8f * cameraZoom;
         const float angle = elapsedSeconds * 0.35f;
         const vpgloader::Float3 eye = {
             orbitCenter.x + std::sin(angle) * distance,
-            orbitCenter.y + orbitRadius * 0.65f,
+            orbitCenter.y + orbitRadius * 0.65f * cameraZoom,
             orbitCenter.z + std::cos(angle) * distance,
         };
-        const float nearPlane = std::max(0.001f, orbitRadius * 0.01f);
+        const float nearPlane = std::max(
+            0.0001f,
+            std::min(orbitRadius * 0.01f, distance * 0.02f));
         const float farPlane = std::max(
             nearPlane + 1.0f, distance + orbitRadius * 4.0f);
         const auto view = LookAt(eye, orbitCenter);
@@ -2005,10 +2112,12 @@ struct VulkanViewer::Impl {
     std::vector<DrawItem> drawItems;
     vpgloader::Float3 orbitCenter;
     float orbitRadius = 1.0f;
+    float cameraZoom = 1.0f;
 
     GLFWwindow* window = nullptr;
     bool glfwInitialized = false;
     bool framebufferResized = false;
+    bool exportRequested = false;
 
     VkInstance instance = VK_NULL_HANDLE;
     VkSurfaceKHR surface = VK_NULL_HANDLE;

@@ -54,9 +54,11 @@ Run the viewer with any model format supported by the model loader:
 
 The viewer loads the complete CPU model through `ModelLoader`, traverses its
 node hierarchy, uploads geometry and base-color textures to Vulkan, and
-automatically orbits the model-space bounds. Press Escape or close the window
-to exit. The optional `--frames N` argument limits the render loop for smoke
-tests.
+automatically orbits the model-space bounds. Press `E`, switch to the console,
+and enter a `.vpgmodel` path (or an existing directory) to export the current
+CPU model and its sibling KTX textures. Use the mouse wheel to move the orbit
+camera closer or farther away. Press Escape or close the window to exit. The
+optional `--frames N` argument limits the render loop for smoke tests.
 
 For a shared Release library, use a separate build directory and set
 `BUILD_SHARED_LIBS` to `ON`:
@@ -119,9 +121,10 @@ auto texture = previewCache.Load("assets/albedo.png");
 vpgloader::texture::TextureConverter::SaveAsKtx(texture, "assets/albedo.ktx");
 ```
 
-The initial KTX writer emits an uncompressed KTX 1.1 file for one- to
-four-channel `UInt8` textures. KTX2, supercompression, and GPU block formats
-are deliberately deferred until their output policy is specified.
+The KTX writer emits an uncompressed KTX 1.1 file for one- to four-channel
+`UInt8`, `UInt16`, `Float16`, and `Float32` textures. KTX2, supercompression,
+and GPU block formats are deliberately deferred until their output policy is
+specified.
 
 ## Model loading
 
@@ -165,3 +168,37 @@ missing texture should instead fail the whole load.
 The handle is immutable to consumers. Releasing the final `ModelHandle`
 releases geometry and its texture handles; texture pixel memory is freed once
 no other texture handle or bounded cache retains it.
+
+## Native model export
+
+Export an already loaded CPU model with `ModelExporter`. Geometry, mesh
+ranges, nodes, transforms, materials, texture-use metadata, bounds, and
+warnings are written to a versioned little-endian binary file. Each loaded
+texture is written as an uncompressed KTX file beside it:
+
+```cpp
+#include <VPGLoader/VPGLoader.hpp>
+
+auto model = vpgloader::ModelLoader::Load("assets/scene.glb");
+vpgloader::ModelExporter::Save(model, "cache/scene.vpgmodel");
+```
+
+The generated texture filenames include the model name and texture index, so
+textures with identical source filenames do not collide. A `.vpgmodel` stores
+only sibling texture filenames; moving a native model therefore means moving
+its generated KTX files with it.
+
+`ModelLoader::Load()` auto-detects the extension and reads the native binary
+without invoking Assimp or OpenImageIO. Geometry arrays are restored with
+contiguous block reads, while the KTX files are decoded directly by
+KTX-Software. The existing texture cache, parallel loading limit,
+`loadTextures`, and `failOnMissingTextures` options continue to apply:
+
+```cpp
+auto cachedModel = vpgloader::ModelLoader::Load("cache/scene.vpgmodel");
+```
+
+The file header contains a magic value, format version, and byte-order marker.
+The reader validates all sizes, enum values, ranges, and cross-references
+before returning the immutable model handle. Version 1 files intentionally
+target little-endian platforms.

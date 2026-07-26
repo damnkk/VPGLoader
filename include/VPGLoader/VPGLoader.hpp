@@ -1,6 +1,7 @@
 #pragma once
 
 #include <VPGLoader/Model.hpp>
+#include <VPGLoader/ModelExporter.hpp>
 #include <VPGLoader/ModelLoader.hpp>
 #include <VPGLoader/Texture.hpp>
 #include <VPGLoader/TextureCache.hpp>

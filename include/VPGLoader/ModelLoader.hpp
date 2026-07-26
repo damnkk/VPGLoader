@@ -16,6 +16,7 @@ enum class ModelFileFormat : std::uint8_t {
     Gltf,
     Obj,
     Fbx,
+    VpgModel,
 };
 
 struct ModelLoadOptions {
@@ -51,6 +52,7 @@ public:
     static std::uint32_t DefaultAssimpPostProcessFlags() noexcept;
 
     // Parses a complete CPU model and returns shared immutable ownership.
+    // Auto detects the native .vpgmodel format and bypasses Assimp for it.
     static ModelHandle Load(const std::filesystem::path& path,
                             const ModelLoadOptions& options = {});
 };
