@@ -290,11 +290,6 @@ TextureHandle LoadEmbeddedTexture(const aiTexture& importedTexture,
             options);
     }
 
-    if (options.outputComponentType != TextureComponentType::UInt8) {
-        throw TextureLoadError(
-            "Uncompressed embedded Assimp textures currently require UInt8 output.");
-    }
-
     const std::size_t width = importedTexture.mWidth;
     const std::size_t height = importedTexture.mHeight;
     if (height > std::numeric_limits<std::size_t>::max() / width

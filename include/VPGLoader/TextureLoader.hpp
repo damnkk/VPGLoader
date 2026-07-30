@@ -13,7 +13,6 @@
 namespace vpgloader {
 
 struct TextureLoadOptions {
-    TextureComponentType outputComponentType = TextureComponentType::UInt8;
     bool loadMipmaps = true;
 };
 

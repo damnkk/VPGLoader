@@ -103,6 +103,10 @@ metadata, including the source path, filename, size, pixel format, dimensions,
 and mip layout. Copy the handle, not `imageData`; data remains valid while at
 least one handle exists.
 
+`TextureLoader` preserves supported source component precision (`UInt8`,
+`UInt16`, `Float16`, or `Float32`) instead of converting every image to
+`UInt8`.
+
 `TextureLoader::LoadCached()` uses a process-wide weak cache. It coalesces
 concurrent requests and reuses an already-live texture, but does not retain
 CPU pixel data after callers release their handles. This is the appropriate

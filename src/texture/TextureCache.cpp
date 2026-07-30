@@ -180,9 +180,8 @@ std::string TextureCache::BuildSourceKey(const std::filesystem::path& path)
 std::string TextureCache::BuildCacheKey(const std::filesystem::path& path,
                                         const TextureLoadOptions& options)
 {
-    return BuildSourceKey(path) + "|type="
-        + std::to_string(static_cast<unsigned int>(options.outputComponentType))
-        + "|mips=" + (options.loadMipmaps ? "1" : "0");
+    return BuildSourceKey(path) + "|mips="
+        + (options.loadMipmaps ? "1" : "0");
 }
 
 void TextureCache::RetainLocked(const std::string& key, const std::shared_ptr<Entry>& entry,

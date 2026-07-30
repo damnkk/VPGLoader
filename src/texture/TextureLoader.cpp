@@ -61,19 +61,24 @@ std::string LowerAscii(std::string value)
     return value;
 }
 
-OIIO::TypeDesc ToOiioType(TextureComponentType type)
+TextureComponentType GetOiioComponentType(const OIIO::TypeDesc& type,
+                                          const std::string& sourceName)
 {
-    switch (type) {
-    case TextureComponentType::UInt8:
-        return OIIO::TypeDesc::UINT8;
-    case TextureComponentType::UInt16:
-        return OIIO::TypeDesc::UINT16;
-    case TextureComponentType::Float16:
-        return OIIO::TypeDesc::HALF;
-    case TextureComponentType::Float32:
-        return OIIO::TypeDesc::FLOAT;
+    if (type == OIIO::TypeDesc::UINT8) {
+        return TextureComponentType::UInt8;
     }
-    return OIIO::TypeDesc::UNKNOWN;
+    if (type == OIIO::TypeDesc::UINT16) {
+        return TextureComponentType::UInt16;
+    }
+    if (type == OIIO::TypeDesc::HALF) {
+        return TextureComponentType::Float16;
+    }
+    if (type == OIIO::TypeDesc::FLOAT) {
+        return TextureComponentType::Float32;
+    }
+    throw TextureLoadError(
+        "Failed to load texture '" + sourceName
+        + "': unsupported source component type");
 }
 
 std::size_t CheckedMipByteSize(const OIIO::ImageSpec& spec, const TextureFormat& format)
@@ -314,11 +319,6 @@ TextureHandle LoadKtx(const std::filesystem::path& path,
         ThrowImageError(sourceName, "unknown KTX container version");
     }
     const TextureFormat format = ktxFormat.format;
-    if (format.componentType != options.outputComponentType) {
-        ThrowImageError(
-            sourceName,
-            "KTX component type does not match the requested output type");
-    }
 
     TextureInfo info;
     info.sourcePath = ResolveSourcePath(path);
@@ -442,15 +442,13 @@ TextureHandle DecodeImage(std::unique_ptr<OIIO::ImageInput> input,
         ThrowImageError(sourceName, "deep images are not supported by TextureLoader");
     }
 
-    const OIIO::TypeDesc outputType = ToOiioType(options.outputComponentType);
-    if (outputType == OIIO::TypeDesc::UNKNOWN) {
-        ThrowImageError(sourceName, "unsupported output component type");
-    }
+    const TextureComponentType componentType =
+        GetOiioComponentType(baseSpec.format, sourceName);
 
     info.width = static_cast<std::uint32_t>(baseSpec.width);
     info.height = static_cast<std::uint32_t>(baseSpec.height);
     info.depth = static_cast<std::uint32_t>(baseSpec.depth);
-    info.format = {options.outputComponentType, static_cast<std::uint8_t>(baseSpec.nchannels)};
+    info.format = {componentType, static_cast<std::uint8_t>(baseSpec.nchannels)};
     info.colorSpace = GetColorSpace(baseSpec);
     info.sourceWasTiled = baseSpec.tile_width > 0;
 
@@ -461,7 +459,7 @@ TextureHandle DecodeImage(std::unique_ptr<OIIO::ImageInput> input,
             break;
         }
         if (spec.width <= 0 || spec.height <= 0 || spec.depth <= 0 || spec.deep
-            || spec.nchannels != baseSpec.nchannels) {
+            || spec.nchannels != baseSpec.nchannels || spec.format != baseSpec.format) {
             ThrowImageError(sourceName, "incompatible mip level");
         }
         mipSpecs.push_back(spec);
@@ -490,7 +488,7 @@ TextureHandle DecodeImage(std::unique_ptr<OIIO::ImageInput> input,
     for (std::size_t mipLevel = 0; mipLevel < mipSpecs.size(); ++mipLevel) {
         const TextureMipLevel& mip = info.mipLevels[mipLevel];
         if (!input->read_image(0, static_cast<int>(mipLevel), 0, mipSpecs[mipLevel].nchannels,
-                               outputType, imageData.data() + mip.byteOffset)) {
+                               baseSpec.format, imageData.data() + mip.byteOffset)) {
             ThrowImageError(sourceName, input->geterror());
         }
     }

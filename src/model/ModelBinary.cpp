@@ -898,14 +898,18 @@ void LoadTextures(LoadedModel& model,
             ModelTextureAsset& asset = model.textures[textureIndex];
             TextureResult& result = results[pendingIndex];
             try {
-                TextureLoadOptions textureOptions = options.textureLoadOptions;
-                textureOptions.outputComponentType = textureTypes[textureIndex];
                 result.texture =
                     options.cacheExternalTextures
                         ? TextureLoader::LoadCached(
-                              asset.sourcePath, textureOptions)
+                              asset.sourcePath, options.textureLoadOptions)
                         : TextureLoader::Load(
-                              asset.sourcePath, textureOptions);
+                              asset.sourcePath, options.textureLoadOptions);
+                if (result.texture->info().format.componentType
+                    != textureTypes[textureIndex]) {
+                    throw ModelLoadError(
+                        "VPG model texture '" + asset.name
+                        + "' has a component type that differs from its metadata.");
+                }
             } catch (const std::exception& error) {
                 result.error =
                     "Failed to load VPG model texture '" + asset.name
