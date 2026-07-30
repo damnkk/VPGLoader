@@ -10,6 +10,7 @@ option(VPGLOADER_BUILD_SAMPLE "Build the Vulkan model-viewer sample" ON)
 option(VPGLOADER_ENABLE_PACKAGING "Generate CPack package metadata" ON)
 
 find_package(assimp CONFIG REQUIRED)
+find_package(glm CONFIG REQUIRED)
 find_package(Ktx CONFIG REQUIRED)
 find_package(OpenImageIO CONFIG REQUIRED)
 find_package(Threads REQUIRED)
@@ -39,6 +40,7 @@ target_include_directories(VPGLoader
 target_link_libraries(VPGLoader
     PUBLIC
         assimp::assimp
+        glm::glm
         KTX::ktx
         OpenImageIO::OpenImageIO
     PRIVATE

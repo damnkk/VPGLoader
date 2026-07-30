@@ -3,7 +3,9 @@
 #include <VPGLoader/Api.hpp>
 #include <VPGLoader/Texture.hpp>
 
-#include <array>
+#include <glm/glm.hpp>
+#include <glm/gtc/quaternion.hpp>
+
 #include <cstdint>
 #include <filesystem>
 #include <limits>
@@ -16,51 +18,19 @@ namespace vpgloader {
 inline constexpr std::uint32_t InvalidModelIndex =
     std::numeric_limits<std::uint32_t>::max();
 
-struct Float2 {
-    float x = 0.0f;
-    float y = 0.0f;
-};
-
-struct Float3 {
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-};
-
-struct Float4 {
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-    float w = 0.0f;
-};
-
-struct Quaternion {
-    float x = 0.0f;
-    float y = 0.0f;
-    float z = 0.0f;
-    float w = 1.0f;
-};
-
-// Column-major 4x4 matrix. Translation occupies values[12..14].
-struct Matrix4 {
-    std::array<float, 16> values = {
-        1.0f, 0.0f, 0.0f, 0.0f,
-        0.0f, 1.0f, 0.0f, 0.0f,
-        0.0f, 0.0f, 1.0f, 0.0f,
-        0.0f, 0.0f, 0.0f, 1.0f,
-    };
-};
-
 struct AABB {
-    Float3 min;
-    Float3 max;
+    glm::vec3 min = glm::vec3(0.0f);
+    glm::vec3 max = glm::vec3(0.0f);
     bool valid = false;
 };
 
-VPGLOADER_API Matrix4 Multiply(const Matrix4& left, const Matrix4& right) noexcept;
-VPGLOADER_API Float3 TransformPoint(const Matrix4& transform, const Float3& point) noexcept;
-VPGLOADER_API AABB TransformAABB(const AABB& bounds, const Matrix4& transform) noexcept;
-VPGLOADER_API void ExpandAABB(AABB& bounds, const Float3& point) noexcept;
+VPGLOADER_API glm::mat4 Multiply(const glm::mat4& left,
+                                 const glm::mat4& right) noexcept;
+VPGLOADER_API glm::vec3 TransformPoint(const glm::mat4& transform,
+                                        const glm::vec3& point) noexcept;
+VPGLOADER_API AABB TransformAABB(const AABB& bounds,
+                                 const glm::mat4& transform) noexcept;
+VPGLOADER_API void ExpandAABB(AABB& bounds, const glm::vec3& point) noexcept;
 VPGLOADER_API void ExpandAABB(AABB& bounds, const AABB& other) noexcept;
 
 struct ModelSubmeshAsset {
@@ -74,9 +44,9 @@ struct ModelNodeAsset {
     std::uint32_t firstChild = InvalidModelIndex;
     std::uint32_t nextSibling = InvalidModelIndex;
     std::uint32_t transformIndex = InvalidModelIndex;
-    Float3 translation;
-    Quaternion rotation;
-    Float3 scale = {1.0f, 1.0f, 1.0f};
+    glm::vec3 translation = glm::vec3(0.0f);
+    glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
+    glm::vec3 scale = glm::vec3(1.0f);
     std::vector<std::uint32_t> submeshIndices;
 };
 
@@ -94,11 +64,11 @@ struct ModelMeshAsset {
 // All vertex streams have the same element count. Missing source attributes
 // are replaced with stable defaults during import.
 struct ModelGeometryData {
-    std::vector<Float3> positions;
-    std::vector<Float3> normals;
-    std::vector<Float4> tangents;
-    std::vector<Float2> texCoords0;
-    std::vector<Float2> texCoords1;
+    std::vector<glm::vec3> positions;
+    std::vector<glm::vec3> normals;
+    std::vector<glm::vec4> tangents;
+    std::vector<glm::vec2> texCoords0;
+    std::vector<glm::vec2> texCoords1;
     std::vector<std::uint32_t> colors;
     std::vector<std::uint32_t> indices;
 };
@@ -118,8 +88,8 @@ struct ModelTextureAsset {
 struct ModelTextureInfo {
     std::uint32_t textureIndex = InvalidModelIndex;
     std::uint32_t texCoord = 0;
-    Float2 offset;
-    Float2 scale = {1.0f, 1.0f};
+    glm::vec2 offset = glm::vec2(0.0f);
+    glm::vec2 scale = glm::vec2(1.0f);
     float rotation = 0.0f;
 
     bool hasTexture() const noexcept
@@ -136,8 +106,8 @@ enum class AlphaMode : std::uint8_t {
 
 struct ModelMaterial {
     std::string name;
-    Float4 baseColorFactor = {1.0f, 1.0f, 1.0f, 1.0f};
-    Float3 emissiveFactor;
+    glm::vec4 baseColorFactor = glm::vec4(1.0f);
+    glm::vec3 emissiveFactor = glm::vec3(0.0f);
     float metallicFactor = 0.0f;
     float roughnessFactor = 1.0f;
     float normalScale = 1.0f;
@@ -160,7 +130,7 @@ struct ModelAsset {
     std::filesystem::path sourcePath;
     std::vector<ModelSubmeshAsset> submeshes;
     std::vector<ModelNodeAsset> nodes;
-    std::vector<Matrix4> transforms;
+    std::vector<glm::mat4> transforms;
     AABB bounds;
     std::uint32_t rootNode = InvalidModelIndex;
 };

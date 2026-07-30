@@ -39,14 +39,14 @@ static_assert(sizeof(float) == 4, ".vpgmodel requires IEEE-754 32-bit floats.");
 static_assert(
     std::numeric_limits<float>::is_iec559,
     ".vpgmodel requires IEEE-754 floating-point representation.");
-static_assert(sizeof(Float2) == 8, "Float2 must have a packed binary layout.");
-static_assert(sizeof(Float3) == 12, "Float3 must have a packed binary layout.");
-static_assert(sizeof(Float4) == 16, "Float4 must have a packed binary layout.");
-static_assert(sizeof(Matrix4) == 64, "Matrix4 must have a packed binary layout.");
-static_assert(std::is_trivially_copyable_v<Float2>);
-static_assert(std::is_trivially_copyable_v<Float3>);
-static_assert(std::is_trivially_copyable_v<Float4>);
-static_assert(std::is_trivially_copyable_v<Matrix4>);
+static_assert(sizeof(glm::vec2) == 8, "glm::vec2 must have a packed binary layout.");
+static_assert(sizeof(glm::vec3) == 12, "glm::vec3 must have a packed binary layout.");
+static_assert(sizeof(glm::vec4) == 16, "glm::vec4 must have a packed binary layout.");
+static_assert(sizeof(glm::mat4) == 64, "glm::mat4 must have a packed binary layout.");
+static_assert(std::is_trivially_copyable_v<glm::vec2>);
+static_assert(std::is_trivially_copyable_v<glm::vec3>);
+static_assert(std::is_trivially_copyable_v<glm::vec4>);
+static_assert(std::is_trivially_copyable_v<glm::mat4>);
 
 bool IsLittleEndian() noexcept
 {
@@ -300,30 +300,30 @@ private:
     std::uint64_t remaining_ = 0;
 };
 
-void WriteFloat2(BinaryWriter& writer, const Float2& value)
+void WriteFloat2(BinaryWriter& writer, const glm::vec2& value)
 {
     writer.WriteFloat(value.x);
     writer.WriteFloat(value.y);
 }
 
-Float2 ReadFloat2(BinaryReader& reader)
+glm::vec2 ReadFloat2(BinaryReader& reader)
 {
     return {reader.ReadFloat(), reader.ReadFloat()};
 }
 
-void WriteFloat3(BinaryWriter& writer, const Float3& value)
+void WriteFloat3(BinaryWriter& writer, const glm::vec3& value)
 {
     writer.WriteFloat(value.x);
     writer.WriteFloat(value.y);
     writer.WriteFloat(value.z);
 }
 
-Float3 ReadFloat3(BinaryReader& reader)
+glm::vec3 ReadFloat3(BinaryReader& reader)
 {
     return {reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat()};
 }
 
-void WriteFloat4(BinaryWriter& writer, const Float4& value)
+void WriteFloat4(BinaryWriter& writer, const glm::vec4& value)
 {
     writer.WriteFloat(value.x);
     writer.WriteFloat(value.y);
@@ -331,7 +331,7 @@ void WriteFloat4(BinaryWriter& writer, const Float4& value)
     writer.WriteFloat(value.w);
 }
 
-Float4 ReadFloat4(BinaryReader& reader)
+glm::vec4 ReadFloat4(BinaryReader& reader)
 {
     return {
         reader.ReadFloat(),
@@ -341,7 +341,7 @@ Float4 ReadFloat4(BinaryReader& reader)
     };
 }
 
-void WriteQuaternion(BinaryWriter& writer, const Quaternion& value)
+void WriteQuaternion(BinaryWriter& writer, const glm::quat& value)
 {
     writer.WriteFloat(value.x);
     writer.WriteFloat(value.y);
@@ -349,14 +349,13 @@ void WriteQuaternion(BinaryWriter& writer, const Quaternion& value)
     writer.WriteFloat(value.w);
 }
 
-Quaternion ReadQuaternion(BinaryReader& reader)
+glm::quat ReadQuaternion(BinaryReader& reader)
 {
-    Quaternion value;
-    value.x = reader.ReadFloat();
-    value.y = reader.ReadFloat();
-    value.z = reader.ReadFloat();
-    value.w = reader.ReadFloat();
-    return value;
+    const float x = reader.ReadFloat();
+    const float y = reader.ReadFloat();
+    const float z = reader.ReadFloat();
+    const float w = reader.ReadFloat();
+    return glm::quat(w, x, y, z);
 }
 
 void WriteAabb(BinaryWriter& writer, const AABB& value)
@@ -755,15 +754,15 @@ std::shared_ptr<LoadedModel> ReadModel(
         node.submeshIndices = ReadIndexVector(reader);
     }
 
-    model->asset.transforms = reader.ReadRawVector<Matrix4>();
+    model->asset.transforms = reader.ReadRawVector<glm::mat4>();
     model->asset.bounds = ReadAabb(reader);
     model->asset.rootNode = reader.ReadU32();
 
-    model->geometry.positions = reader.ReadRawVector<Float3>();
-    model->geometry.normals = reader.ReadRawVector<Float3>();
-    model->geometry.tangents = reader.ReadRawVector<Float4>();
-    model->geometry.texCoords0 = reader.ReadRawVector<Float2>();
-    model->geometry.texCoords1 = reader.ReadRawVector<Float2>();
+    model->geometry.positions = reader.ReadRawVector<glm::vec3>();
+    model->geometry.normals = reader.ReadRawVector<glm::vec3>();
+    model->geometry.tangents = reader.ReadRawVector<glm::vec4>();
+    model->geometry.texCoords0 = reader.ReadRawVector<glm::vec2>();
+    model->geometry.texCoords1 = reader.ReadRawVector<glm::vec2>();
     model->geometry.colors = reader.ReadRawVector<std::uint32_t>();
     model->geometry.indices = reader.ReadRawVector<std::uint32_t>();
 

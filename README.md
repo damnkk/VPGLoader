@@ -82,8 +82,8 @@ cpack --config build/debug/CPackConfig.cmake
 ```
 
 Set `VPGLOADER_ENABLE_PACKAGING=OFF` to omit CPack metadata. Packaging only
-includes VPGLoader artifacts; consumers should resolve Assimp, OpenImageIO,
-and KTX-Software through the same vcpkg toolchain.
+includes VPGLoader artifacts; consumers should resolve Assimp, GLM,
+OpenImageIO, and KTX-Software through the same vcpkg toolchain.
 
 ## Repository layout
 
@@ -151,6 +151,12 @@ materials, material texture-use metadata, decoded `TextureHandle` objects,
 the original node hierarchy, local transforms, submesh associations, and
 model-space bounds. Material texture members index `textureInfos`; each
 texture-info entry then identifies a texture plus its UV set and transform.
+
+Model math data is exposed directly as GLM types: geometry uses
+`glm::vec2`/`glm::vec3`/`glm::vec4`, nodes use `glm::quat`, and transforms use
+`glm::mat4`. Geometry and transforms can therefore be passed to GLM- or
+Vulkan-facing code without conversion. Matrices are column-major and use
+`matrix[3].xyz` for translation.
 
 External model textures use the same process-wide weak texture cache as
 `TextureLoader::LoadCached()`. Embedded compressed images in GLB/FBX files are

@@ -6,6 +6,9 @@
 #include <VPGLoader/ModelExporter.hpp>
 #include <VPGLoader/ModelLoader.hpp>
 
+#include <glm/ext/matrix_clip_space.hpp>
+#include <glm/gtc/matrix_transform.hpp>
+
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -78,16 +81,16 @@ struct SwapchainSupport {
 struct DrawItem {
     std::uint32_t meshIndex = 0;
     std::uint32_t materialIndex = 0;
-    vpgloader::Matrix4 model;
+    glm::mat4 model = glm::mat4(1.0f);
 };
 
 struct alignas(16) CameraData {
-    vpgloader::Matrix4 viewProjection;
+    glm::mat4 viewProjection = glm::mat4(1.0f);
 };
 
 struct alignas(16) DrawData {
-    vpgloader::Matrix4 model;
-    vpgloader::Float4 baseColorFactor;
+    glm::mat4 model = glm::mat4(1.0f);
+    glm::vec4 baseColorFactor = glm::vec4(1.0f);
     float alphaCutoff = 0.5f;
     std::uint32_t alphaMode = 0;
     float padding[2] = {};
@@ -95,69 +98,19 @@ struct alignas(16) DrawData {
 
 static_assert(sizeof(DrawData) == 96, "Push constants must match the GLSL layout");
 
-vpgloader::Float3 Subtract(const vpgloader::Float3& left,
-                           const vpgloader::Float3& right)
+glm::mat4 LookAt(const glm::vec3& eye, const glm::vec3& target)
 {
-    return {left.x - right.x, left.y - right.y, left.z - right.z};
+    return glm::lookAtRH(eye, target, glm::vec3(0.0f, 1.0f, 0.0f));
 }
 
-float Dot(const vpgloader::Float3& left, const vpgloader::Float3& right)
+glm::mat4 Perspective(float verticalFieldOfView,
+                      float aspect,
+                      float nearPlane,
+                      float farPlane)
 {
-    return left.x * right.x + left.y * right.y + left.z * right.z;
-}
-
-vpgloader::Float3 Cross(const vpgloader::Float3& left,
-                        const vpgloader::Float3& right)
-{
-    return {
-        left.y * right.z - left.z * right.y,
-        left.z * right.x - left.x * right.z,
-        left.x * right.y - left.y * right.x,
-    };
-}
-
-vpgloader::Float3 Normalize(const vpgloader::Float3& value)
-{
-    const float length = std::sqrt(Dot(value, value));
-    if (length <= std::numeric_limits<float>::epsilon()) {
-        return {};
-    }
-    return {value.x / length, value.y / length, value.z / length};
-}
-
-vpgloader::Matrix4 LookAt(const vpgloader::Float3& eye,
-                          const vpgloader::Float3& target)
-{
-    const auto forward = Normalize(Subtract(target, eye));
-    const auto side = Normalize(Cross(forward, {0.0f, 1.0f, 0.0f}));
-    const auto up = Cross(side, forward);
-
-    vpgloader::Matrix4 result;
-    result.values = {
-        side.x, up.x, -forward.x, 0.0f,
-        side.y, up.y, -forward.y, 0.0f,
-        side.z, up.z, -forward.z, 0.0f,
-        -Dot(side, eye), -Dot(up, eye), Dot(forward, eye), 1.0f,
-    };
-    return result;
-}
-
-vpgloader::Matrix4 Perspective(float verticalFieldOfView,
-                               float aspect,
-                               float nearPlane,
-                               float farPlane)
-{
-    const float inverseTan =
-        1.0f / std::tan(verticalFieldOfView * 0.5f);
-
-    vpgloader::Matrix4 result;
-    result.values.fill(0.0f);
-    result.values[0] = inverseTan / aspect;
-    result.values[5] = -inverseTan;
-    result.values[10] = farPlane / (nearPlane - farPlane);
-    result.values[11] = -1.0f;
-    result.values[14] =
-        (farPlane * nearPlane) / (nearPlane - farPlane);
+    glm::mat4 result =
+        glm::perspectiveRH_ZO(verticalFieldOfView, aspect, nearPlane, farPlane);
+    result[1][1] *= -1.0f;
     return result;
 }
 
@@ -332,10 +285,10 @@ struct VulkanViewer::Impl {
                 (model->asset.bounds.min.y + model->asset.bounds.max.y) * 0.5f,
                 (model->asset.bounds.min.z + model->asset.bounds.max.z) * 0.5f,
             };
-            const auto extent = Subtract(
-                model->asset.bounds.max, model->asset.bounds.min);
+            const auto extent =
+                model->asset.bounds.max - model->asset.bounds.min;
             orbitRadius = std::max(
-                0.1f, 0.5f * std::sqrt(Dot(extent, extent)));
+                0.1f, 0.5f * std::sqrt(glm::dot(extent, extent)));
         }
 
         std::cout
@@ -356,16 +309,16 @@ struct VulkanViewer::Impl {
         }
 
         std::vector<bool> visited(model->asset.nodes.size(), false);
-        std::function<void(std::uint32_t, const vpgloader::Matrix4&)> visit;
+        std::function<void(std::uint32_t, const glm::mat4&)> visit;
         visit = [&](std::uint32_t nodeIndex,
-                    const vpgloader::Matrix4& parentTransform) {
+                    const glm::mat4& parentTransform) {
             if (nodeIndex >= model->asset.nodes.size() || visited[nodeIndex]) {
                 return;
             }
             visited[nodeIndex] = true;
 
             const auto& node = model->asset.nodes[nodeIndex];
-            vpgloader::Matrix4 localTransform;
+            glm::mat4 localTransform(1.0f);
             if (node.transformIndex < model->asset.transforms.size()) {
                 localTransform = model->asset.transforms[node.transformIndex];
             }
@@ -396,7 +349,7 @@ struct VulkanViewer::Impl {
             }
         };
 
-        const vpgloader::Matrix4 identity;
+        const glm::mat4 identity(1.0f);
         if (model->asset.rootNode < model->asset.nodes.size()) {
             visit(model->asset.rootNode, identity);
         }
@@ -1777,7 +1730,7 @@ struct VulkanViewer::Impl {
     {
         const float distance = orbitRadius * 2.8f * cameraZoom;
         const float angle = elapsedSeconds * 0.35f;
-        const vpgloader::Float3 eye = {
+        const glm::vec3 eye = {
             orbitCenter.x + std::sin(angle) * distance,
             orbitCenter.y + orbitRadius * 0.65f * cameraZoom,
             orbitCenter.z + std::cos(angle) * distance,
@@ -2110,7 +2063,7 @@ struct VulkanViewer::Impl {
     std::uint64_t frameLimit = 0;
     vpgloader::ModelHandle model;
     std::vector<DrawItem> drawItems;
-    vpgloader::Float3 orbitCenter;
+    glm::vec3 orbitCenter = glm::vec3(0.0f);
     float orbitRadius = 1.0f;
     float cameraZoom = 1.0f;
 

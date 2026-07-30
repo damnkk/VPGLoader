@@ -95,30 +95,23 @@ std::string ImportedName(const aiString& name, const char* prefix, std::uint32_t
     return name.length > 0 ? std::string(name.C_Str()) : IndexedName(prefix, index);
 }
 
-Matrix4 ToMatrix4(const aiMatrix4x4& matrix) noexcept
+glm::mat4 ToMatrix4(const aiMatrix4x4& matrix) noexcept
 {
-    Matrix4 result;
-    result.values = {
+    return glm::mat4(
         matrix.a1, matrix.b1, matrix.c1, matrix.d1,
         matrix.a2, matrix.b2, matrix.c2, matrix.d2,
         matrix.a3, matrix.b3, matrix.c3, matrix.d3,
-        matrix.a4, matrix.b4, matrix.c4, matrix.d4,
-    };
-    return result;
+        matrix.a4, matrix.b4, matrix.c4, matrix.d4);
 }
 
-Float3 Cross(const Float3& left, const Float3& right) noexcept
+glm::vec3 Cross(const glm::vec3& left, const glm::vec3& right) noexcept
 {
-    return {
-        left.y * right.z - left.z * right.y,
-        left.z * right.x - left.x * right.z,
-        left.x * right.y - left.y * right.x,
-    };
+    return glm::cross(left, right);
 }
 
-float Dot(const Float3& left, const Float3& right) noexcept
+float Dot(const glm::vec3& left, const glm::vec3& right) noexcept
 {
-    return left.x * right.x + left.y * right.y + left.z * right.z;
+    return glm::dot(left, right);
 }
 
 std::uint32_t PackColor(const aiColor4D& color) noexcept
@@ -176,7 +169,7 @@ std::uint32_t AppendMeshGeometry(const aiMesh& mesh,
     for (unsigned int vertexIndex = 0; vertexIndex < mesh.mNumVertices; ++vertexIndex) {
         const aiVector3D importedPosition =
             mesh.HasPositions() ? mesh.mVertices[vertexIndex] : aiVector3D();
-        const Float3 position = {
+        const glm::vec3 position = {
             importedPosition.x,
             importedPosition.y,
             importedPosition.z,
@@ -184,7 +177,7 @@ std::uint32_t AppendMeshGeometry(const aiMesh& mesh,
         geometry.positions.push_back(position);
         ExpandAABB(meshAsset.bounds, position);
 
-        Float3 normal = {0.0f, 1.0f, 0.0f};
+        glm::vec3 normal = {0.0f, 1.0f, 0.0f};
         if (mesh.HasNormals()) {
             normal = {
                 mesh.mNormals[vertexIndex].x,
@@ -194,14 +187,14 @@ std::uint32_t AppendMeshGeometry(const aiMesh& mesh,
         }
         geometry.normals.push_back(normal);
 
-        Float4 tangent = {1.0f, 0.0f, 0.0f, 1.0f};
+        glm::vec4 tangent = {1.0f, 0.0f, 0.0f, 1.0f};
         if (mesh.HasTangentsAndBitangents()) {
-            const Float3 tangentDirection = {
+            const glm::vec3 tangentDirection = {
                 mesh.mTangents[vertexIndex].x,
                 mesh.mTangents[vertexIndex].y,
                 mesh.mTangents[vertexIndex].z,
             };
-            const Float3 bitangent = {
+            const glm::vec3 bitangent = {
                 mesh.mBitangents[vertexIndex].x,
                 mesh.mBitangents[vertexIndex].y,
                 mesh.mBitangents[vertexIndex].z,
@@ -340,8 +333,8 @@ TextureHandle LoadEmbeddedTexture(const aiTexture& importedTexture,
 struct ImportedTextureSlot {
     std::uint32_t textureIndex = InvalidModelIndex;
     std::uint32_t texCoord = 0;
-    Float2 offset;
-    Float2 scale = {1.0f, 1.0f};
+    glm::vec2 offset = glm::vec2(0.0f);
+    glm::vec2 scale = glm::vec2(1.0f);
     float rotation = 0.0f;
     aiTextureType type = aiTextureType_NONE;
 
@@ -726,7 +719,7 @@ std::uint32_t AppendNode(const aiNode* importedNode,
     node.parent = parentIndex;
     node.transformIndex = CheckedIndex(asset.transforms.size(), "Transform count");
     node.translation = {translation.x, translation.y, translation.z};
-    node.rotation = {rotation.x, rotation.y, rotation.z, rotation.w};
+    node.rotation = glm::quat(rotation.w, rotation.x, rotation.y, rotation.z);
     node.scale = {scale.x, scale.y, scale.z};
     asset.transforms.push_back(ToMatrix4(importedNode->mTransformation));
     asset.nodes.push_back(std::move(node));
@@ -759,18 +752,18 @@ std::uint32_t AppendNode(const aiNode* importedNode,
 
 void AccumulateModelBounds(LoadedModel& model,
                            std::uint32_t nodeIndex,
-                           const Matrix4& parentToModel)
+                           const glm::mat4& parentToModel)
 {
     if (nodeIndex >= model.asset.nodes.size()) {
         return;
     }
 
     const ModelNodeAsset& node = model.asset.nodes[nodeIndex];
-    const Matrix4 localTransform =
+    const glm::mat4 localTransform =
         node.transformIndex < model.asset.transforms.size()
             ? model.asset.transforms[node.transformIndex]
-            : Matrix4();
-    const Matrix4 localToModel = Multiply(parentToModel, localTransform);
+            : glm::mat4(1.0f);
+    const glm::mat4 localToModel = Multiply(parentToModel, localTransform);
 
     for (const std::uint32_t submeshIndex : node.submeshIndices) {
         if (submeshIndex >= model.asset.submeshes.size()) {
@@ -937,7 +930,7 @@ ModelHandle ModelLoader::Load(const std::filesystem::path& path,
         throw ModelLoadError("Model node hierarchy import failed.");
     }
 
-    AccumulateModelBounds(*model, model->asset.rootNode, Matrix4());
+    AccumulateModelBounds(*model, model->asset.rootNode, glm::mat4(1.0f));
     materialSession.LoadTextures();
     return model;
 }

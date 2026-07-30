@@ -3,6 +3,7 @@
 include(CMakeFindDependencyMacro)
 
 find_dependency(assimp CONFIG REQUIRED)
+find_dependency(glm CONFIG REQUIRED)
 find_dependency(Ktx CONFIG REQUIRED)
 find_dependency(OpenImageIO CONFIG REQUIRED)
 find_dependency(Threads REQUIRED)
