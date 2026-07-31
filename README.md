@@ -105,7 +105,9 @@ least one handle exists.
 
 `TextureLoader` preserves supported source component precision (`UInt8`,
 `UInt16`, `Float16`, or `Float32`) instead of converting every image to
-`UInt8`.
+`UInt8`. Loaded textures always use four RGBA channels: missing color channels
+are filled with zero and a missing alpha channel is filled with one, without
+changing component precision.
 
 `TextureLoader::LoadCached()` uses a process-wide weak cache. It coalesces
 concurrent requests and reuses an already-live texture, but does not retain

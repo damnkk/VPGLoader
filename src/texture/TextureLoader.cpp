@@ -3,6 +3,7 @@
 #include <VPGLoader/TextureCache.hpp>
 
 #include <OpenImageIO/filesystem.h>
+#include <OpenImageIO/imagebufalgo.h>
 #include <OpenImageIO/imageio.h>
 #include <ktx.h>
 
@@ -29,6 +30,8 @@ constexpr ktx_uint32_t GlHalfFloat = 0x140B;
 constexpr ktx_uint32_t GlFloat = 0x1406;
 constexpr ktx_uint32_t GlSrgb8 = 0x8C41;
 constexpr ktx_uint32_t GlSrgb8Alpha8 = 0x8C43;
+
+constexpr int RgbaChannelCount = 4;
 
 constexpr ktx_uint32_t VkFormatR8Unorm = 9;
 constexpr ktx_uint32_t VkFormatR8Srgb = 15;
@@ -122,6 +125,58 @@ TextureColorSpace GetColorSpace(const OIIO::ImageSpec& spec)
 [[noreturn]] void ThrowImageError(const std::string& source, const std::string& detail)
 {
     throw TextureLoadError("Failed to load texture '" + source + "': " + detail);
+}
+
+TextureHandle NormalizeToRgba(TextureInfo info,
+                              Texture::ByteBuffer imageData,
+                              const std::vector<OIIO::ImageSpec>& mipSpecs,
+                              const std::string& sourceName)
+{
+    if (info.format.channels == RgbaChannelCount) {
+        return Texture::Create(std::move(info), std::move(imageData));
+    }
+
+    TextureInfo normalizedInfo = info;
+    normalizedInfo.format.channels = RgbaChannelCount;
+    normalizedInfo.mipLevels.clear();
+    Texture::ByteBuffer normalizedImageData;
+    std::size_t normalizedBytes = 0;
+    for (std::size_t mipLevel = 0; mipLevel < mipSpecs.size(); ++mipLevel) {
+        const TextureMipLevel& sourceMip = info.mipLevels[mipLevel];
+        const OIIO::ImageSpec& sourceSpec = mipSpecs[mipLevel];
+        OIIO::ImageBuf source(sourceSpec, imageData.data() + sourceMip.byteOffset);
+        OIIO::ImageBuf normalized = OIIO::ImageBufAlgo::channels(
+            source,
+            RgbaChannelCount,
+            {},
+            {0.0f, 0.0f, 0.0f, 1.0f});
+        if (normalized.has_error()) {
+            ThrowImageError(sourceName, normalized.geterror());
+        }
+
+        const std::size_t mipBytes = CheckedMipByteSize(
+            normalized.spec(), normalizedInfo.format);
+        if (mipBytes > std::numeric_limits<std::size_t>::max() - normalizedBytes) {
+            ThrowImageError(sourceName, "texture data exceeds addressable memory");
+        }
+        normalizedInfo.mipLevels.push_back({
+            static_cast<std::uint32_t>(normalized.spec().width),
+            static_cast<std::uint32_t>(normalized.spec().height),
+            static_cast<std::uint32_t>(normalized.spec().depth),
+            normalizedBytes,
+            mipBytes,
+        });
+        normalizedImageData.resize(normalizedBytes + mipBytes);
+        if (!normalized.get_pixels(
+                normalized.spec().roi(),
+                sourceSpec.format,
+                normalizedImageData.data() + normalizedBytes)) {
+            ThrowImageError(sourceName, normalized.geterror());
+        }
+        normalizedBytes += mipBytes;
+    }
+
+    return Texture::Create(std::move(normalizedInfo), std::move(normalizedImageData));
 }
 
 struct KtxTextureDeleter {
@@ -425,7 +480,39 @@ TextureHandle LoadKtx(const std::filesystem::path& path,
         }
     }
 
-    return Texture::Create(std::move(info), std::move(imageData));
+    if (format.channels == RgbaChannelCount) {
+        return Texture::Create(std::move(info), std::move(imageData));
+    }
+
+    OIIO::TypeDesc oiioFormat;
+    switch (format.componentType) {
+    case TextureComponentType::UInt8:
+        oiioFormat = OIIO::TypeDesc::UINT8;
+        break;
+    case TextureComponentType::UInt16:
+        oiioFormat = OIIO::TypeDesc::UINT16;
+        break;
+    case TextureComponentType::Float16:
+        oiioFormat = OIIO::TypeDesc::HALF;
+        break;
+    case TextureComponentType::Float32:
+        oiioFormat = OIIO::TypeDesc::FLOAT;
+        break;
+    }
+
+    std::vector<OIIO::ImageSpec> mipSpecs;
+    mipSpecs.reserve(info.mipLevels.size());
+    for (const TextureMipLevel& mip : info.mipLevels) {
+        OIIO::ImageSpec spec(
+            static_cast<int>(mip.width),
+            static_cast<int>(mip.height),
+            format.channels,
+            oiioFormat);
+        spec.depth = static_cast<int>(mip.depth);
+        mipSpecs.push_back(std::move(spec));
+    }
+    return NormalizeToRgba(
+        std::move(info), std::move(imageData), mipSpecs, sourceName);
 }
 
 TextureHandle DecodeImage(std::unique_ptr<OIIO::ImageInput> input,
@@ -433,7 +520,7 @@ TextureHandle DecodeImage(std::unique_ptr<OIIO::ImageInput> input,
                           const std::string& sourceName,
                           const TextureLoadOptions& options)
 {
-    const OIIO::ImageSpec baseSpec = input->spec_dimensions(0, 0);
+    const OIIO::ImageSpec baseSpec = input->spec(0, 0);
     if (baseSpec.format == OIIO::TypeDesc::UNKNOWN || baseSpec.width <= 0 || baseSpec.height <= 0
         || baseSpec.depth <= 0 || baseSpec.nchannels <= 0 || baseSpec.nchannels > 4) {
         ThrowImageError(sourceName, "unsupported dimensions or channel count");
@@ -454,7 +541,7 @@ TextureHandle DecodeImage(std::unique_ptr<OIIO::ImageInput> input,
 
     std::vector<OIIO::ImageSpec> mipSpecs;
     for (int mipLevel = 0;; ++mipLevel) {
-        const OIIO::ImageSpec spec = input->spec_dimensions(0, mipLevel);
+        const OIIO::ImageSpec spec = input->spec(0, mipLevel);
         if (spec.format == OIIO::TypeDesc::UNKNOWN) {
             break;
         }
@@ -493,7 +580,8 @@ TextureHandle DecodeImage(std::unique_ptr<OIIO::ImageInput> input,
         }
     }
 
-    return Texture::Create(std::move(info), std::move(imageData));
+    return NormalizeToRgba(
+        std::move(info), std::move(imageData), mipSpecs, sourceName);
 }
 
 } // namespace
