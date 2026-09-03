@@ -1575,7 +1575,7 @@ struct VulkanViewer::Impl {
         for (std::size_t materialIndex = 0;
              materialIndex < model->materials.size(); ++materialIndex) {
             const auto textureInfoIndex =
-                model->materials[materialIndex].baseColorTexture;
+                model->materials[materialIndex].pbrBaseColorTexture;
             if (textureInfoIndex >= model->textureInfos.size()) {
                 continue;
             }
@@ -1827,9 +1827,10 @@ struct VulkanViewer::Impl {
                 MaterialFor(item.materialIndex);
             DrawData push;
             push.model = item.model;
-            push.baseColorFactor = material.baseColorFactor;
+            push.baseColorFactor = material.pbrBaseColorFactor;
             push.alphaCutoff = material.alphaCutoff;
-            push.alphaMode = ToAlphaMode(material.alphaMode);
+            push.alphaMode = ToAlphaMode(
+                static_cast<vpgloader::AlphaMode>(material.alphaMode));
             vkCmdPushConstants(
                 command,
                 pipelineLayout,

@@ -214,5 +214,5 @@ auto cachedModel = vpgloader::ModelLoader::Load("cache/scene.vpgmodel");
 
 The file header contains a magic value, format version, and byte-order marker.
 The reader validates all sizes, enum values, ranges, and cross-references
-before returning the immutable model handle. Version 1 files intentionally
+before returning the immutable model handle. Version 2 files intentionally
 target little-endian platforms.

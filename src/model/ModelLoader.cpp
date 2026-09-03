@@ -359,8 +359,9 @@ private:
     std::uint32_t EnsureTexture(const aiString& importedPath, bool isSrgb);
     ImportedTextureSlot ReadTextureSlot(const aiMaterial* material,
                                         aiTextureType type,
-                                        bool isSrgb);
-    std::uint32_t AppendTextureInfo(const ImportedTextureSlot& slot);
+                                        bool isSrgb,
+                                        unsigned int slotIndex = 0);
+    std::uint16_t AppendTextureInfo(const ImportedTextureSlot& slot);
 
     LoadedModel& model_;
     const std::filesystem::path& modelPath_;
@@ -533,16 +534,18 @@ void MaterialImportSession::LoadTextures()
 
 ImportedTextureSlot MaterialImportSession::ReadTextureSlot(const aiMaterial* material,
                                                            aiTextureType type,
-                                                           bool isSrgb)
+                                                           bool isSrgb,
+                                                           unsigned int slotIndex)
 {
     ImportedTextureSlot result;
-    if (material == nullptr || material->GetTextureCount(type) == 0) {
+    if (material == nullptr || material->GetTextureCount(type) <= slotIndex) {
         return result;
     }
 
     aiString importedPath;
     unsigned int uvIndex = 0;
-    if (material->GetTexture(type, 0, &importedPath, nullptr, &uvIndex) != AI_SUCCESS) {
+    if (material->GetTexture(type, slotIndex, &importedPath, nullptr, &uvIndex)
+        != AI_SUCCESS) {
         return result;
     }
 
@@ -551,7 +554,7 @@ ImportedTextureSlot MaterialImportSession::ReadTextureSlot(const aiMaterial* mat
     result.type = type;
 
     aiUVTransform transform;
-    if (material->Get(AI_MATKEY_UVTRANSFORM(type, 0), transform) == AI_SUCCESS) {
+    if (material->Get(AI_MATKEY_UVTRANSFORM(type, slotIndex), transform) == AI_SUCCESS) {
         result.offset = {transform.mTranslation.x, transform.mTranslation.y};
         result.scale = {transform.mScaling.x, transform.mScaling.y};
         result.rotation = transform.mRotation;
@@ -559,13 +562,20 @@ ImportedTextureSlot MaterialImportSession::ReadTextureSlot(const aiMaterial* mat
     return result;
 }
 
-std::uint32_t MaterialImportSession::AppendTextureInfo(const ImportedTextureSlot& slot)
+std::uint16_t MaterialImportSession::AppendTextureInfo(const ImportedTextureSlot& slot)
 {
     if (!slot.hasTexture()) {
-        return InvalidModelIndex;
+        return InvalidMaterialTexture;
     }
 
+    if (model_.textureInfos.empty()) {
+        model_.textureInfos.emplace_back();
+    }
     const std::uint32_t index = CheckedIndex(model_.textureInfos.size(), "Texture-info count");
+    if (index > std::numeric_limits<std::uint16_t>::max()) {
+        throw ModelLoadError(
+            "A material texture-info index exceeds the 16-bit GltfShadeMaterial limit.");
+    }
     ModelTextureInfo info;
     info.textureIndex = slot.textureIndex;
     info.texCoord = slot.texCoord;
@@ -573,29 +583,23 @@ std::uint32_t MaterialImportSession::AppendTextureInfo(const ImportedTextureSlot
     info.scale = slot.scale;
     info.rotation = slot.rotation;
     model_.textureInfos.push_back(info);
-    return index;
+    return static_cast<std::uint16_t>(index);
 }
 
 ModelMaterial MaterialImportSession::Import(const aiMaterial* material,
                                             std::uint32_t materialIndex)
 {
     ModelMaterial result;
-    result.name = IndexedName("Material", materialIndex);
+    (void)materialIndex;
     if (material == nullptr) {
         return result;
-    }
-
-    aiString materialName;
-    if (aiGetMaterialString(material, AI_MATKEY_NAME, &materialName) == AI_SUCCESS
-        && materialName.length > 0) {
-        result.name = materialName.C_Str();
     }
 
     aiColor4D importedBaseColor;
     if (aiGetMaterialColor(material, AI_MATKEY_BASE_COLOR, &importedBaseColor) == AI_SUCCESS
         || aiGetMaterialColor(material, AI_MATKEY_COLOR_DIFFUSE, &importedBaseColor)
                == AI_SUCCESS) {
-        result.baseColorFactor = {
+        result.pbrBaseColorFactor = {
             importedBaseColor.r,
             importedBaseColor.g,
             importedBaseColor.b,
@@ -608,34 +612,105 @@ ModelMaterial MaterialImportSession::Import(const aiMaterial* material,
         result.emissiveFactor = {emissive.r, emissive.g, emissive.b};
     }
 
-    aiGetMaterialFloat(material, AI_MATKEY_METALLIC_FACTOR, &result.metallicFactor);
-    aiGetMaterialFloat(material, AI_MATKEY_ROUGHNESS_FACTOR, &result.roughnessFactor);
+    aiGetMaterialFloat(material, AI_MATKEY_METALLIC_FACTOR, &result.pbrMetallicFactor);
+    aiGetMaterialFloat(material, AI_MATKEY_ROUGHNESS_FACTOR, &result.pbrRoughnessFactor);
 
     float opacity = 1.0f;
     if (aiGetMaterialFloat(material, AI_MATKEY_OPACITY, &opacity) == AI_SUCCESS) {
-        result.baseColorFactor.w = opacity;
+        result.pbrBaseColorFactor.w = opacity;
     }
 
     int twoSided = 0;
     if (aiGetMaterialInteger(material, AI_MATKEY_TWOSIDED, &twoSided) == AI_SUCCESS) {
-        result.doubleSided = twoSided != 0;
+        result.doubleSided = twoSided != 0 ? 1 : 0;
     }
 
     int unlit = 0;
     if (material->Get("$mat.gltf.unlit", 0, 0, unlit) == AI_SUCCESS) {
-        result.unlit = unlit != 0;
+        result.unlit = unlit != 0 ? 1 : 0;
+    } else {
+        int shadingMode = aiShadingMode_PBR_BRDF;
+        if (aiGetMaterialInteger(material, AI_MATKEY_SHADING_MODEL, &shadingMode)
+                == AI_SUCCESS
+            && shadingMode == aiShadingMode_Unlit) {
+            result.unlit = 1;
+        }
     }
 
     aiGetMaterialFloat(material, AI_MATKEY_GLTF_ALPHACUTOFF, &result.alphaCutoff);
     aiString alphaMode;
     if (aiGetMaterialString(material, AI_MATKEY_GLTF_ALPHAMODE, &alphaMode) == AI_SUCCESS) {
         if (EqualsIgnoreCase(alphaMode.C_Str(), "MASK")) {
-            result.alphaMode = AlphaMode::Mask;
+            result.alphaMode = static_cast<std::int32_t>(AlphaMode::Mask);
         } else if (EqualsIgnoreCase(alphaMode.C_Str(), "BLEND")) {
-            result.alphaMode = AlphaMode::Blend;
+            result.alphaMode = static_cast<std::int32_t>(AlphaMode::Blend);
         }
-    } else if (result.baseColorFactor.w < 1.0f) {
-        result.alphaMode = AlphaMode::Blend;
+    } else if (result.pbrBaseColorFactor.w < 1.0f) {
+        result.alphaMode = static_cast<std::int32_t>(AlphaMode::Blend);
+    }
+
+    aiGetMaterialFloat(material, AI_MATKEY_REFRACTI, &result.ior);
+    aiGetMaterialFloat(material, AI_MATKEY_TRANSMISSION_FACTOR, &result.transmissionFactor);
+    aiGetMaterialFloat(material, AI_MATKEY_VOLUME_THICKNESS_FACTOR, &result.thicknessFactor);
+    aiGetMaterialFloat(
+        material, AI_MATKEY_VOLUME_ATTENUATION_DISTANCE, &result.attenuationDistance);
+    aiGetMaterialFloat(material, AI_MATKEY_CLEARCOAT_FACTOR, &result.clearcoatFactor);
+    aiGetMaterialFloat(
+        material, AI_MATKEY_CLEARCOAT_ROUGHNESS_FACTOR, &result.clearcoatRoughness);
+    aiGetMaterialFloat(material, AI_MATKEY_SPECULAR_FACTOR, &result.specularFactor);
+    aiGetMaterialFloat(
+        material, AI_MATKEY_SHEEN_ROUGHNESS_FACTOR, &result.sheenRoughnessFactor);
+    aiGetMaterialFloat(material, AI_MATKEY_ANISOTROPY_FACTOR, &result.anisotropyStrength);
+
+    float anisotropyAngle = 0.0f;
+    if (aiGetMaterialFloat(material, AI_MATKEY_ANISOTROPY_ROTATION, &anisotropyAngle)
+        == AI_SUCCESS) {
+        result.anisotropyRotation = {std::cos(anisotropyAngle), std::sin(anisotropyAngle)};
+    }
+
+    aiColor4D color;
+    if (aiGetMaterialColor(material, AI_MATKEY_VOLUME_ATTENUATION_COLOR, &color)
+        == AI_SUCCESS) {
+        result.attenuationColor = {color.r, color.g, color.b};
+    }
+    if (aiGetMaterialColor(material, AI_MATKEY_COLOR_SPECULAR, &color) == AI_SUCCESS) {
+        result.specularColorFactor = {color.r, color.g, color.b};
+        result.pbrSpecularFactor = result.specularColorFactor;
+    }
+    if (aiGetMaterialColor(material, AI_MATKEY_SHEEN_COLOR_FACTOR, &color)
+        == AI_SUCCESS) {
+        result.sheenColorFactor = {color.r, color.g, color.b};
+    }
+
+    if (aiGetMaterialFloat(material, AI_MATKEY_GLOSSINESS_FACTOR,
+                           &result.pbrGlossinessFactor) == AI_SUCCESS) {
+        result.usePbrSpecularGlossiness = 1;
+        aiColor4D diffuse;
+        if (aiGetMaterialColor(material, AI_MATKEY_COLOR_DIFFUSE, &diffuse)
+            == AI_SUCCESS) {
+            result.pbrDiffuseFactor = {diffuse.r, diffuse.g, diffuse.b, diffuse.a};
+        }
+    }
+
+    // These keys are used by Assimp builds that already expose the newer glTF
+    // extensions even when their public material.h has not added named macros.
+    material->Get("$mat.ior", 0, 0, result.ior);
+    material->Get("$mat.iridescence.factor", 0, 0, result.iridescenceFactor);
+    material->Get("$mat.iridescence.ior", 0, 0, result.iridescenceIor);
+    material->Get("$mat.iridescence.thicknessMinimum", 0, 0,
+                  result.iridescenceThicknessMinimum);
+    material->Get("$mat.iridescence.thicknessMaximum", 0, 0,
+                  result.iridescenceThicknessMaximum);
+    material->Get("$mat.dispersion", 0, 0, result.dispersion);
+    material->Get("$mat.diffuseTransmission.factor", 0, 0,
+                  result.diffuseTransmissionFactor);
+    material->Get("$mat.volume.scatterAnisotropy", 0, 0, result.scatterAnisotropy);
+
+    if (material->Get("$clr.diffuseTransmission.factor", 0, 0, color) == AI_SUCCESS) {
+        result.diffuseTransmissionColor = {color.r, color.g, color.b};
+    }
+    if (material->Get("$clr.volume.multiscatter", 0, 0, color) == AI_SUCCESS) {
+        result.multiscatterColorFactor = {color.r, color.g, color.b};
     }
 
     if (!options_.loadTextures) {
@@ -648,7 +723,7 @@ ModelMaterial MaterialImportSession::Import(const aiMaterial* material,
         baseColorSlot =
             ReadTextureSlot(material, aiTextureType_DIFFUSE, options_.srgbBaseColorTextures);
     }
-    result.baseColorTexture = AppendTextureInfo(baseColorSlot);
+    result.pbrBaseColorTexture = AppendTextureInfo(baseColorSlot);
 
     ImportedTextureSlot normal = ReadTextureSlot(material, aiTextureType_NORMALS, false);
     if (!normal.hasTexture()) {
@@ -658,7 +733,7 @@ ModelMaterial MaterialImportSession::Import(const aiMaterial* material,
     if (normal.hasTexture()) {
         material->Get(
             AI_MATKEY_GLTF_TEXTURE_SCALE(normal.type, 0),
-            result.normalScale);
+            result.normalTextureScale);
     }
 
     ImportedTextureSlot metallicRoughness =
@@ -667,7 +742,7 @@ ModelMaterial MaterialImportSession::Import(const aiMaterial* material,
         metallicRoughness =
             ReadTextureSlot(material, aiTextureType_DIFFUSE_ROUGHNESS, false);
     }
-    result.metallicRoughnessTexture = AppendTextureInfo(metallicRoughness);
+    result.pbrMetallicRoughnessTexture = AppendTextureInfo(metallicRoughness);
 
     const ImportedTextureSlot emissiveTexture =
         ReadTextureSlot(material, aiTextureType_EMISSIVE, options_.srgbEmissiveTextures);
@@ -682,9 +757,32 @@ ModelMaterial MaterialImportSession::Import(const aiMaterial* material,
             result.occlusionStrength);
     }
 
-    const ImportedTextureSlot specular =
-        ReadTextureSlot(material, aiTextureType_SPECULAR, false);
-    result.specularTexture = AppendTextureInfo(specular);
+    result.transmissionTexture = AppendTextureInfo(
+        ReadTextureSlot(material, aiTextureType_TRANSMISSION, false, 0));
+    result.thicknessTexture = AppendTextureInfo(
+        ReadTextureSlot(material, aiTextureType_TRANSMISSION, false, 1));
+    result.clearcoatTexture = AppendTextureInfo(
+        ReadTextureSlot(material, aiTextureType_CLEARCOAT, false, 0));
+    result.clearcoatRoughnessTexture = AppendTextureInfo(
+        ReadTextureSlot(material, aiTextureType_CLEARCOAT, false, 1));
+    result.clearcoatNormalTexture = AppendTextureInfo(
+        ReadTextureSlot(material, aiTextureType_CLEARCOAT, false, 2));
+    result.specularTexture = AppendTextureInfo(
+        ReadTextureSlot(material, aiTextureType_SPECULAR, false, 0));
+    result.specularColorTexture = AppendTextureInfo(
+        ReadTextureSlot(material, aiTextureType_SPECULAR, true, 1));
+    result.anisotropyTexture = AppendTextureInfo(
+        ReadTextureSlot(material, aiTextureType_ANISOTROPY, false));
+    result.sheenColorTexture = AppendTextureInfo(
+        ReadTextureSlot(material, aiTextureType_SHEEN, true, 0));
+    result.sheenRoughnessTexture = AppendTextureInfo(
+        ReadTextureSlot(material, aiTextureType_SHEEN, false, 1));
+
+    if (result.usePbrSpecularGlossiness != 0) {
+        result.pbrDiffuseTexture = AppendTextureInfo(
+            ReadTextureSlot(material, aiTextureType_DIFFUSE, true));
+        result.pbrSpecularGlossinessTexture = result.specularTexture;
+    }
     return result;
 }
 
@@ -881,7 +979,6 @@ ModelHandle ModelLoader::Load(const std::filesystem::path& path,
     }
     if (model->materials.empty()) {
         ModelMaterial defaultMaterial;
-        defaultMaterial.name = "DefaultMaterial";
         model->materials.push_back(std::move(defaultMaterial));
     }
 

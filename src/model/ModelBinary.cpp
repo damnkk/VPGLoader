@@ -31,7 +31,7 @@ namespace {
 constexpr std::array<std::uint8_t, 8> FileMagic = {
     'V', 'P', 'G', 'M', 'O', 'D', 'E', 'L',
 };
-constexpr std::uint32_t FileVersion = 1;
+constexpr std::uint32_t FileVersion = 2;
 constexpr std::uint32_t EndianMarker = 0x01020304U;
 constexpr std::uint64_t MaximumStringBytes = 1024ULL * 1024ULL * 1024ULL;
 
@@ -47,6 +47,7 @@ static_assert(std::is_trivially_copyable_v<glm::vec2>);
 static_assert(std::is_trivially_copyable_v<glm::vec3>);
 static_assert(std::is_trivially_copyable_v<glm::vec4>);
 static_assert(std::is_trivially_copyable_v<glm::mat4>);
+static_assert(std::is_trivially_copyable_v<ModelMaterial>);
 
 bool IsLittleEndian() noexcept
 {
@@ -506,25 +507,44 @@ void ValidateModel(const LoadedModel& model, bool exporting)
     }
 
     for (const ModelMaterial& material : model.materials) {
-        if (static_cast<std::uint8_t>(material.alphaMode)
-            > static_cast<std::uint8_t>(AlphaMode::Blend)) {
+        if (material.alphaMode < static_cast<std::int32_t>(AlphaMode::Opaque)
+            || material.alphaMode > static_cast<std::int32_t>(AlphaMode::Blend)) {
             fail("A material contains an invalid alpha mode.");
         }
-        const std::array<std::uint32_t, 6> textureInfoIndices = {
-            material.baseColorTexture,
+        if ((material.doubleSided != 0 && material.doubleSided != 1)
+            || (material.unlit != 0 && material.unlit != 1)
+            || (material.usePbrSpecularGlossiness != 0
+                && material.usePbrSpecularGlossiness != 1)) {
+            fail("A material contains an invalid boolean flag.");
+        }
+        const std::array<std::uint16_t, 21> textureInfoIndices = {
+            material.pbrBaseColorTexture,
             material.normalTexture,
-            material.metallicRoughnessTexture,
+            material.pbrMetallicRoughnessTexture,
             material.emissiveTexture,
-            material.occlusionTexture,
+            material.transmissionTexture,
+            material.thicknessTexture,
+            material.clearcoatTexture,
+            material.clearcoatRoughnessTexture,
+            material.clearcoatNormalTexture,
             material.specularTexture,
+            material.specularColorTexture,
+            material.iridescenceTexture,
+            material.iridescenceThicknessTexture,
+            material.anisotropyTexture,
+            material.sheenColorTexture,
+            material.sheenRoughnessTexture,
+            material.occlusionTexture,
+            material.pbrDiffuseTexture,
+            material.pbrSpecularGlossinessTexture,
+            material.diffuseTransmissionTexture,
+            material.diffuseTransmissionColorTexture,
         };
-        for (const std::uint32_t index : textureInfoIndices) {
-            RequireIndex(
-                index,
-                model.textureInfos.size(),
-                true,
-                "Material texture-info index",
-                exporting);
+        for (const std::uint16_t index : textureInfoIndices) {
+            if (index != InvalidMaterialTexture) {
+                RequireIndex(index, model.textureInfos.size(), false,
+                             "Material texture-info index", exporting);
+            }
         }
     }
 }
@@ -648,26 +668,7 @@ void WriteModel(BinaryWriter& writer,
         WriteAabb(writer, mesh.bounds);
     }
 
-    writer.WriteU64(static_cast<std::uint64_t>(model.materials.size()));
-    for (const ModelMaterial& material : model.materials) {
-        writer.WriteString(material.name);
-        WriteFloat4(writer, material.baseColorFactor);
-        WriteFloat3(writer, material.emissiveFactor);
-        writer.WriteFloat(material.metallicFactor);
-        writer.WriteFloat(material.roughnessFactor);
-        writer.WriteFloat(material.normalScale);
-        writer.WriteFloat(material.occlusionStrength);
-        writer.WriteU8(static_cast<std::uint8_t>(material.alphaMode));
-        writer.WriteFloat(material.alphaCutoff);
-        writer.WriteU8(material.doubleSided ? 1U : 0U);
-        writer.WriteU8(material.unlit ? 1U : 0U);
-        writer.WriteU32(material.baseColorTexture);
-        writer.WriteU32(material.normalTexture);
-        writer.WriteU32(material.metallicRoughnessTexture);
-        writer.WriteU32(material.emissiveTexture);
-        writer.WriteU32(material.occlusionTexture);
-        writer.WriteU32(material.specularTexture);
-    }
+    writer.WriteRawVector(model.materials);
 
     writer.WriteU64(static_cast<std::uint64_t>(model.textureInfos.size()));
     for (const ModelTextureInfo& info : model.textureInfos) {
@@ -776,34 +777,7 @@ std::shared_ptr<LoadedModel> ReadModel(
         mesh.bounds = ReadAabb(reader);
     }
 
-    model->materials.resize(reader.ReadCount(78));
-    for (ModelMaterial& material : model->materials) {
-        material.name = reader.ReadString();
-        material.baseColorFactor = ReadFloat4(reader);
-        material.emissiveFactor = ReadFloat3(reader);
-        material.metallicFactor = reader.ReadFloat();
-        material.roughnessFactor = reader.ReadFloat();
-        material.normalScale = reader.ReadFloat();
-        material.occlusionStrength = reader.ReadFloat();
-        const std::uint8_t alphaMode = reader.ReadU8();
-        if (alphaMode > static_cast<std::uint8_t>(AlphaMode::Blend)) {
-            throw ModelLoadError("VPG model contains an invalid alpha mode.");
-        }
-        material.alphaMode = static_cast<AlphaMode>(alphaMode);
-        material.alphaCutoff = reader.ReadFloat();
-        const std::uint8_t doubleSided = reader.ReadU8();
-        const std::uint8_t unlit = reader.ReadU8();
-        CheckBoolByte(doubleSided, "double-sided");
-        CheckBoolByte(unlit, "unlit");
-        material.doubleSided = doubleSided != 0;
-        material.unlit = unlit != 0;
-        material.baseColorTexture = reader.ReadU32();
-        material.normalTexture = reader.ReadU32();
-        material.metallicRoughnessTexture = reader.ReadU32();
-        material.emissiveTexture = reader.ReadU32();
-        material.occlusionTexture = reader.ReadU32();
-        material.specularTexture = reader.ReadU32();
-    }
+    model->materials = reader.ReadRawVector<ModelMaterial>();
 
     model->textureInfos.resize(reader.ReadCount(28));
     for (ModelTextureInfo& info : model->textureInfos) {
