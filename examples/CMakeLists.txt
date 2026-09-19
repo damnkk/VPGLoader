@@ -47,3 +47,5 @@ target_link_libraries(vpgloader-vulkan-viewer PRIVATE
 if(MSVC)
     target_compile_options(vpgloader-vulkan-viewer PRIVATE /utf-8)
 endif()
+
+vpgloader_deploy_runtime(vpgloader-vulkan-viewer)

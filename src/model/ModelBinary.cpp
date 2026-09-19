@@ -1,4 +1,6 @@
 #include "ModelBinary.hpp"
+#include "TextureLoading.hpp"
+#include "../PathUtils.hpp"
 
 #include <VPGLoader/ModelExporter.hpp>
 #include <VPGLoader/ModelLoader.hpp>
@@ -7,7 +9,6 @@
 
 #include <algorithm>
 #include <array>
-#include <atomic>
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
@@ -20,7 +21,6 @@
 #include <sstream>
 #include <string>
 #include <system_error>
-#include <thread>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -31,7 +31,7 @@ namespace {
 constexpr std::array<std::uint8_t, 8> FileMagic = {
     'V', 'P', 'G', 'M', 'O', 'D', 'E', 'L',
 };
-constexpr std::uint32_t FileVersion = 2;
+constexpr std::uint32_t FileVersion = 3;
 constexpr std::uint32_t EndianMarker = 0x01020304U;
 constexpr std::uint64_t MaximumStringBytes = 1024ULL * 1024ULL * 1024ULL;
 
@@ -53,28 +53,6 @@ bool IsLittleEndian() noexcept
 {
     const std::uint16_t value = 1;
     return *reinterpret_cast<const std::uint8_t*>(&value) == 1;
-}
-
-std::string LowerAscii(std::string value)
-{
-    for (char& character : value) {
-        if (character >= 'A' && character <= 'Z') {
-            character = static_cast<char>(character - 'A' + 'a');
-        }
-    }
-    return value;
-}
-
-std::filesystem::path ResolvePath(const std::filesystem::path& path)
-{
-    std::error_code error;
-    std::filesystem::path result = std::filesystem::absolute(path, error);
-    if (error) {
-        return path.lexically_normal();
-    }
-    const std::filesystem::path canonical =
-        std::filesystem::weakly_canonical(result, error);
-    return error ? result.lexically_normal() : canonical;
 }
 
 class BinaryWriter final {
@@ -146,10 +124,6 @@ public:
     {
         static_assert(std::is_trivially_copyable_v<T>);
         WriteU64(static_cast<std::uint64_t>(values.size()));
-        if (values.size() >
-            std::numeric_limits<std::size_t>::max() / sizeof(T)) {
-            throw ModelExportError("Model array byte size exceeds size_t.");
-        }
         WriteRaw(values.data(), values.size() * sizeof(T));
     }
 
@@ -277,13 +251,12 @@ public:
         return values;
     }
 
-    std::size_t ReadCount(std::size_t minimumBytesPerElement = 1)
+    std::size_t ReadCount(std::size_t minimumBytesPerElement)
     {
         const std::uint64_t count = ReadU64();
         if (count > static_cast<std::uint64_t>(
                 std::numeric_limits<std::size_t>::max())
-            || (minimumBytesPerElement != 0
-                && count > remaining_ / minimumBytesPerElement)) {
+            || count > remaining_ / minimumBytesPerElement) {
             throw ModelLoadError(
                 "VPG model '" + path_.u8string() + "' contains an invalid object count.");
         }
@@ -324,41 +297,6 @@ glm::vec3 ReadFloat3(BinaryReader& reader)
     return {reader.ReadFloat(), reader.ReadFloat(), reader.ReadFloat()};
 }
 
-void WriteFloat4(BinaryWriter& writer, const glm::vec4& value)
-{
-    writer.WriteFloat(value.x);
-    writer.WriteFloat(value.y);
-    writer.WriteFloat(value.z);
-    writer.WriteFloat(value.w);
-}
-
-glm::vec4 ReadFloat4(BinaryReader& reader)
-{
-    return {
-        reader.ReadFloat(),
-        reader.ReadFloat(),
-        reader.ReadFloat(),
-        reader.ReadFloat(),
-    };
-}
-
-void WriteQuaternion(BinaryWriter& writer, const glm::quat& value)
-{
-    writer.WriteFloat(value.x);
-    writer.WriteFloat(value.y);
-    writer.WriteFloat(value.z);
-    writer.WriteFloat(value.w);
-}
-
-glm::quat ReadQuaternion(BinaryReader& reader)
-{
-    const float x = reader.ReadFloat();
-    const float y = reader.ReadFloat();
-    const float z = reader.ReadFloat();
-    const float w = reader.ReadFloat();
-    return glm::quat(w, x, y, z);
-}
-
 void WriteAabb(BinaryWriter& writer, const AABB& value)
 {
     WriteFloat3(writer, value.min);
@@ -377,17 +315,6 @@ AABB ReadAabb(BinaryReader& reader)
     }
     value.valid = valid != 0;
     return value;
-}
-
-void WriteIndexVector(BinaryWriter& writer,
-                      const std::vector<std::uint32_t>& values)
-{
-    writer.WriteRawVector(values);
-}
-
-std::vector<std::uint32_t> ReadIndexVector(BinaryReader& reader)
-{
-    return reader.ReadRawVector<std::uint32_t>();
 }
 
 void RequireIndex(std::uint32_t index,
@@ -448,54 +375,10 @@ void ValidateModel(const LoadedModel& model, bool exporting)
         }
     }
 
-    for (const ModelSubmeshAsset& submesh : model.asset.submeshes) {
-        RequireIndex(
-            submesh.meshIndex,
-            model.meshes.size(),
-            false,
-            "Submesh mesh index",
-            exporting);
+    for (const ModelDrawable& drawable : model.drawables) {
+        RequireIndex(drawable.meshIndex, model.meshes.size(), false,
+                     "Drawable mesh index", exporting);
     }
-    for (const ModelNodeAsset& node : model.asset.nodes) {
-        RequireIndex(
-            node.parent,
-            model.asset.nodes.size(),
-            true,
-            "Node parent index",
-            exporting);
-        RequireIndex(
-            node.firstChild,
-            model.asset.nodes.size(),
-            true,
-            "Node first-child index",
-            exporting);
-        RequireIndex(
-            node.nextSibling,
-            model.asset.nodes.size(),
-            true,
-            "Node next-sibling index",
-            exporting);
-        RequireIndex(
-            node.transformIndex,
-            model.asset.transforms.size(),
-            false,
-            "Node transform index",
-            exporting);
-        for (const std::uint32_t submeshIndex : node.submeshIndices) {
-            RequireIndex(
-                submeshIndex,
-                model.asset.submeshes.size(),
-                false,
-                "Node submesh index",
-                exporting);
-        }
-    }
-    RequireIndex(
-        model.asset.rootNode,
-        model.asset.nodes.size(),
-        model.asset.nodes.empty(),
-        "Root node index",
-        exporting);
 
     for (const ModelTextureInfo& info : model.textureInfos) {
         RequireIndex(
@@ -625,30 +508,13 @@ void WriteModel(BinaryWriter& writer,
     writer.WriteU32(0);
     writer.WriteU32(0);
 
-    writer.WriteString(model.asset.name);
-
-    writer.WriteU64(static_cast<std::uint64_t>(model.asset.submeshes.size()));
-    for (const ModelSubmeshAsset& submesh : model.asset.submeshes) {
-        writer.WriteU32(submesh.meshIndex);
-        WriteAabb(writer, submesh.bounds);
+    writer.WriteString(model.name);
+    writer.WriteU64(static_cast<std::uint64_t>(model.drawables.size()));
+    for (const ModelDrawable& drawable : model.drawables) {
+        writer.WriteString(drawable.name);
+        writer.WriteU32(drawable.meshIndex);
+        writer.WriteRaw(&drawable.modelFromMesh, sizeof(glm::mat4));
     }
-
-    writer.WriteU64(static_cast<std::uint64_t>(model.asset.nodes.size()));
-    for (const ModelNodeAsset& node : model.asset.nodes) {
-        writer.WriteString(node.name);
-        writer.WriteU32(node.parent);
-        writer.WriteU32(node.firstChild);
-        writer.WriteU32(node.nextSibling);
-        writer.WriteU32(node.transformIndex);
-        WriteFloat3(writer, node.translation);
-        WriteQuaternion(writer, node.rotation);
-        WriteFloat3(writer, node.scale);
-        WriteIndexVector(writer, node.submeshIndices);
-    }
-
-    writer.WriteRawVector(model.asset.transforms);
-    WriteAabb(writer, model.asset.bounds);
-    writer.WriteU32(model.asset.rootNode);
 
     writer.WriteRawVector(model.geometry.positions);
     writer.WriteRawVector(model.geometry.normals);
@@ -719,7 +585,7 @@ std::shared_ptr<LoadedModel> ReadModel(
     if (version != FileVersion) {
         throw ModelLoadError(
             "Unsupported VPG model version " + std::to_string(version)
-            + " in '" + sourcePath.u8string() + "'.");
+            + " in '" + sourcePath.u8string() + "'. Re-export the source model with this version of VPGLoader.");
     }
     if (reader.ReadU32() != EndianMarker) {
         throw ModelLoadError(
@@ -733,31 +599,14 @@ std::shared_ptr<LoadedModel> ReadModel(
     }
 
     auto model = std::make_shared<LoadedModel>();
-    model->asset.name = reader.ReadString();
-    model->asset.sourcePath = sourcePath;
-
-    model->asset.submeshes.resize(reader.ReadCount(29));
-    for (ModelSubmeshAsset& submesh : model->asset.submeshes) {
-        submesh.meshIndex = reader.ReadU32();
-        submesh.bounds = ReadAabb(reader);
+    model->name = reader.ReadString();
+    model->sourcePath = sourcePath;
+    model->drawables.resize(reader.ReadCount(76)); // string length + index + matrix
+    for (ModelDrawable& drawable : model->drawables) {
+        drawable.name = reader.ReadString();
+        drawable.meshIndex = reader.ReadU32();
+        reader.ReadRaw(&drawable.modelFromMesh, sizeof(glm::mat4));
     }
-
-    model->asset.nodes.resize(reader.ReadCount(60));
-    for (ModelNodeAsset& node : model->asset.nodes) {
-        node.name = reader.ReadString();
-        node.parent = reader.ReadU32();
-        node.firstChild = reader.ReadU32();
-        node.nextSibling = reader.ReadU32();
-        node.transformIndex = reader.ReadU32();
-        node.translation = ReadFloat3(reader);
-        node.rotation = ReadQuaternion(reader);
-        node.scale = ReadFloat3(reader);
-        node.submeshIndices = ReadIndexVector(reader);
-    }
-
-    model->asset.transforms = reader.ReadRawVector<glm::mat4>();
-    model->asset.bounds = ReadAabb(reader);
-    model->asset.rootNode = reader.ReadU32();
 
     model->geometry.positions = reader.ReadRawVector<glm::vec3>();
     model->geometry.normals = reader.ReadRawVector<glm::vec3>();
@@ -832,6 +681,7 @@ std::shared_ptr<LoadedModel> ReadModel(
             "VPG model '" + sourcePath.u8string() + "' contains unexpected trailing data.");
     }
     ValidateModel(*model, false);
+    model->bounds = model->CalculateBounds();
     return model;
 }
 
@@ -842,110 +692,29 @@ void LoadTextures(LoadedModel& model,
     if (!options.loadTextures) {
         return;
     }
-
-    struct TextureResult {
-        TextureHandle texture;
-        std::string error;
-    };
-
     std::vector<std::size_t> pending;
-    std::string firstFailure;
     for (std::size_t index = 0; index < model.textures.size(); ++index) {
-        ModelTextureAsset& asset = model.textures[index];
+        const ModelTextureAsset& asset = model.textures[index];
         if (!asset.sourcePath.empty()) {
             pending.push_back(index);
-        } else if (!asset.loadError.empty() && firstFailure.empty()) {
-            firstFailure = asset.loadError;
+        } else if (options.failOnMissingTextures && !asset.loadError.empty()) {
+            throw ModelLoadError(asset.loadError);
         }
     }
-
-    std::vector<TextureResult> results(pending.size());
-    std::atomic<std::size_t> next{0};
-    const auto worker = [&] {
-        for (;;) {
-            const std::size_t pendingIndex =
-                next.fetch_add(1, std::memory_order_relaxed);
-            if (pendingIndex >= pending.size()) {
-                return;
-            }
-            const std::size_t textureIndex = pending[pendingIndex];
-            ModelTextureAsset& asset = model.textures[textureIndex];
-            TextureResult& result = results[pendingIndex];
-            try {
-                result.texture =
-                    options.cacheExternalTextures
-                        ? TextureLoader::LoadCached(
-                              asset.sourcePath, options.textureLoadOptions)
-                        : TextureLoader::Load(
-                              asset.sourcePath, options.textureLoadOptions);
-                if (result.texture->info().format.componentType
-                    != textureTypes[textureIndex]) {
-                    throw ModelLoadError(
-                        "VPG model texture '" + asset.name
-                        + "' has a component type that differs from its metadata.");
-                }
-            } catch (const std::exception& error) {
-                result.error =
-                    "Failed to load VPG model texture '" + asset.name
-                    + "' from '" + asset.sourcePath.u8string() + "': "
-                    + error.what();
-            } catch (...) {
-                result.error =
-                    "Failed to load VPG model texture '" + asset.name
-                    + "': unknown error";
-            }
+    LoadTextureBatch(model, pending, options, [&](std::size_t index) {
+        TextureHandle texture = LoadExternalTexture(model.textures[index].sourcePath, options);
+        if (texture->info().format.componentType != textureTypes[index]) {
+            throw ModelLoadError("Texture component type differs from its native model metadata.");
         }
-    };
-
-    std::size_t workerCount = options.maxTextureLoadConcurrency;
-    if (workerCount == 0) {
-        workerCount = std::thread::hardware_concurrency();
-        if (workerCount == 0) {
-            workerCount = 1;
-        }
-    }
-    workerCount = std::min(workerCount, pending.size());
-    std::vector<std::thread> workers;
-    workers.reserve(workerCount > 0 ? workerCount - 1 : 0);
-    for (std::size_t index = 1; index < workerCount; ++index) {
-        workers.emplace_back(worker);
-    }
-    if (workerCount != 0) {
-        worker();
-    }
-    for (std::thread& thread : workers) {
-        thread.join();
-    }
-
-    for (std::size_t index = 0; index < pending.size(); ++index) {
-        ModelTextureAsset& asset = model.textures[pending[index]];
-        TextureResult& result = results[index];
-        if (result.texture) {
-            asset.texture = std::move(result.texture);
-            asset.loadError.clear();
-        } else {
-            asset.loadError = std::move(result.error);
-            model.warnings.push_back(asset.loadError);
-            if (firstFailure.empty()) {
-                firstFailure = asset.loadError;
-            }
-        }
-    }
-
-    if (options.failOnMissingTextures && !firstFailure.empty()) {
-        throw ModelLoadError(firstFailure);
-    }
+        return texture;
+    });
 }
 
 } // namespace
 
-bool IsVpgModelPath(const std::filesystem::path& path) noexcept
+bool IsVpgModelPath(const std::filesystem::path& path)
 {
-    try {
-        return LowerAscii(path.extension().u8string()) == ".vpgmodel";
-    } catch (...) {
-        return false;
-    }
+    return LowerAscii(path.extension().u8string()) == ".vpgmodel";
 }
 
 void SaveVpgModel(const LoadedModel& model,
@@ -996,6 +765,22 @@ ModelHandle LoadVpgModel(const std::filesystem::path& path,
         std::vector<TextureComponentType> textureTypes;
         std::shared_ptr<LoadedModel> model =
             ReadModel(reader, sourcePath, textureTypes);
+        if (!options.loadMaterials) {
+            model->materials.assign(1, ModelMaterial{});
+            model->textureInfos.clear();
+            model->textures.clear();
+            for (ModelMeshAsset& mesh : model->meshes) {
+                mesh.materialIndex = 0;
+            }
+        }
+        if (options.globalScale != 1.0f) {
+            glm::mat4 scale(options.globalScale);
+            scale[3][3] = 1.0f;
+            for (ModelDrawable& drawable : model->drawables) {
+                drawable.modelFromMesh = scale * drawable.modelFromMesh;
+            }
+            model->bounds = model->CalculateBounds();
+        }
         LoadTextures(*model, textureTypes, options);
         return model;
     } catch (const ModelLoadError&) {

@@ -1,99 +1,30 @@
 #include <VPGLoader/ModelLoader.hpp>
 
 #include "ModelBinary.hpp"
+#include "AssimpMaterials.hpp"
+#include "ModelUtils.hpp"
+#include "../PathUtils.hpp"
 
-#include <assimp/GltfMaterial.h>
 #include <assimp/Importer.hpp>
 #include <assimp/config.h>
-#include <assimp/material.h>
 #include <assimp/postprocess.h>
 #include <assimp/scene.h>
 
 #include <algorithm>
-#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <filesystem>
-#include <limits>
 #include <memory>
 #include <string>
-#include <system_error>
-#include <thread>
 #include <utility>
 #include <vector>
 
 namespace vpgloader {
 namespace {
 
-std::string LowerAscii(std::string value)
-{
-    for (char& character : value) {
-        if (character >= 'A' && character <= 'Z') {
-            character = static_cast<char>(character - 'A' + 'a');
-        }
-    }
-    return value;
-}
-
-bool EqualsIgnoreCase(const char* left, const char* right)
-{
-    if (left == nullptr || right == nullptr) {
-        return left == right;
-    }
-    while (*left != '\0' && *right != '\0') {
-        char leftCharacter = *left++;
-        char rightCharacter = *right++;
-        if (leftCharacter >= 'A' && leftCharacter <= 'Z') {
-            leftCharacter = static_cast<char>(leftCharacter - 'A' + 'a');
-        }
-        if (rightCharacter >= 'A' && rightCharacter <= 'Z') {
-            rightCharacter = static_cast<char>(rightCharacter - 'A' + 'a');
-        }
-        if (leftCharacter != rightCharacter) {
-            return false;
-        }
-    }
-    return *left == '\0' && *right == '\0';
-}
-
-std::filesystem::path ResolvePath(const std::filesystem::path& path)
-{
-    std::error_code error;
-    std::filesystem::path result = std::filesystem::absolute(path, error);
-    if (error) {
-        return path.lexically_normal();
-    }
-    const std::filesystem::path canonical = std::filesystem::weakly_canonical(result, error);
-    return error ? result.lexically_normal() : canonical;
-}
-
-std::filesystem::path ResolveTexturePath(const std::filesystem::path& modelPath,
-                                         const aiString& importedPath)
-{
-    std::filesystem::path result = std::filesystem::u8path(importedPath.C_Str());
-    if (result.is_relative()) {
-        result = modelPath.parent_path() / result;
-    }
-    return ResolvePath(result);
-}
-
-std::uint32_t CheckedIndex(std::size_t value, const char* description)
-{
-    if (value >= static_cast<std::size_t>(InvalidModelIndex)) {
-        throw ModelLoadError(std::string(description) + " exceeds the 32-bit model index range.");
-    }
-    return static_cast<std::uint32_t>(value);
-}
-
-std::string IndexedName(const char* prefix, std::uint32_t index)
-{
-    return std::string(prefix) + "_" + std::to_string(index);
-}
-
-std::string ImportedName(const aiString& name, const char* prefix, std::uint32_t index)
-{
-    return name.length > 0 ? std::string(name.C_Str()) : IndexedName(prefix, index);
-}
+using detail::CheckedIndex;
+using detail::LowerAscii;
+using detail::ResolvePath;
 
 glm::mat4 ToMatrix4(const aiMatrix4x4& matrix) noexcept
 {
@@ -104,20 +35,10 @@ glm::mat4 ToMatrix4(const aiMatrix4x4& matrix) noexcept
         matrix.a4, matrix.b4, matrix.c4, matrix.d4);
 }
 
-glm::vec3 Cross(const glm::vec3& left, const glm::vec3& right) noexcept
-{
-    return glm::cross(left, right);
-}
-
-float Dot(const glm::vec3& left, const glm::vec3& right) noexcept
-{
-    return glm::dot(left, right);
-}
-
 std::uint32_t PackColor(const aiColor4D& color) noexcept
 {
     const auto toByte = [](float value) {
-        value = std::max(0.0f, std::min(1.0f, value));
+        value = std::clamp(value, 0.0f, 1.0f);
         return static_cast<std::uint32_t>(value * 255.0f + 0.5f);
     };
     return toByte(color.r) | (toByte(color.g) << 8) | (toByte(color.b) << 16)
@@ -130,23 +51,16 @@ void ReserveGeometry(const aiScene& scene, ModelGeometryData& geometry)
     std::size_t indexCount = 0;
     for (unsigned int meshIndex = 0; meshIndex < scene.mNumMeshes; ++meshIndex) {
         const aiMesh* mesh = scene.mMeshes[meshIndex];
-        if (mesh == nullptr) {
-            continue;
-        }
-        if (mesh->mNumVertices > std::numeric_limits<std::size_t>::max() - vertexCount) {
-            throw ModelLoadError("Model vertex count exceeds addressable memory.");
-        }
         vertexCount += mesh->mNumVertices;
         for (unsigned int faceIndex = 0; faceIndex < mesh->mNumFaces; ++faceIndex) {
             if (mesh->mFaces[faceIndex].mNumIndices == 3) {
-                if (indexCount > std::numeric_limits<std::size_t>::max() - 3) {
-                    throw ModelLoadError("Model index count exceeds addressable memory.");
-                }
                 indexCount += 3;
             }
         }
     }
 
+    CheckedIndex(vertexCount, "Vertex count");
+    CheckedIndex(indexCount, "Index count");
     geometry.positions.reserve(vertexCount);
     geometry.normals.reserve(vertexCount);
     geometry.tangents.reserve(vertexCount);
@@ -156,7 +70,7 @@ void ReserveGeometry(const aiScene& scene, ModelGeometryData& geometry)
     geometry.indices.reserve(indexCount);
 }
 
-std::uint32_t AppendMeshGeometry(const aiMesh& mesh,
+void AppendMeshGeometry(const aiMesh& mesh,
                                  std::uint32_t materialIndex,
                                  LoadedModel& model)
 {
@@ -168,7 +82,7 @@ std::uint32_t AppendMeshGeometry(const aiMesh& mesh,
 
     for (unsigned int vertexIndex = 0; vertexIndex < mesh.mNumVertices; ++vertexIndex) {
         const aiVector3D importedPosition =
-            mesh.HasPositions() ? mesh.mVertices[vertexIndex] : aiVector3D();
+            mesh.mVertices[vertexIndex];
         const glm::vec3 position = {
             importedPosition.x,
             importedPosition.y,
@@ -203,7 +117,7 @@ std::uint32_t AppendMeshGeometry(const aiMesh& mesh,
                 tangentDirection.x,
                 tangentDirection.y,
                 tangentDirection.z,
-                Dot(Cross(normal, tangentDirection), bitangent) < 0.0f ? -1.0f : 1.0f,
+                glm::dot(glm::cross(normal, tangentDirection), bitangent) < 0.0f ? -1.0f : 1.0f,
             };
         }
         geometry.tangents.push_back(tangent);
@@ -252,626 +166,26 @@ std::uint32_t AppendMeshGeometry(const aiMesh& mesh,
     meshAsset.vertexCount = mesh.mNumVertices;
     meshAsset.indexCount =
         CheckedIndex(geometry.indices.size() - meshAsset.firstIndex, "Mesh index count");
-    const std::uint32_t meshIndex = CheckedIndex(model.meshes.size(), "Mesh count");
     model.meshes.push_back(std::move(meshAsset));
-    return meshIndex;
 }
 
-std::string FormatHint(const aiTexture& texture)
+void AppendDrawables(const aiNode& node,
+                     const glm::mat4& modelFromParent,
+                     LoadedModel& model)
 {
-    const char* begin = texture.achFormatHint;
-    const char* end = begin;
-    const char* maximum = begin + sizeof(texture.achFormatHint);
-    while (end != maximum && *end != '\0') {
-        ++end;
-    }
-    return LowerAscii(std::string(begin, end));
-}
-
-TextureHandle LoadEmbeddedTexture(const aiTexture& importedTexture,
-                                  const std::string& assetName,
-                                  bool isSrgb,
-                                  const TextureLoadOptions& options)
-{
-    if (importedTexture.pcData == nullptr || importedTexture.mWidth == 0) {
-        throw TextureLoadError("Embedded texture '" + assetName + "' is empty.");
-    }
-
-    if (importedTexture.mHeight == 0) {
-        std::string decodeName = assetName;
-        const std::string hint = FormatHint(importedTexture);
-        if (!hint.empty() && std::filesystem::path(decodeName).extension().empty()) {
-            decodeName += "." + hint;
+    const glm::mat4 modelFromMesh = modelFromParent * ToMatrix4(node.mTransformation);
+    for (unsigned int slot = 0; slot < node.mNumMeshes; ++slot) {
+        const std::uint32_t meshIndex = node.mMeshes[slot];
+        if (meshIndex >= model.meshes.size()) {
+            throw ModelLoadError("Assimp returned an invalid node mesh reference.");
         }
-        return TextureLoader::LoadFromMemory(
-            decodeName,
-            reinterpret_cast<const std::uint8_t*>(importedTexture.pcData),
-            importedTexture.mWidth,
-            options);
-    }
-
-    const std::size_t width = importedTexture.mWidth;
-    const std::size_t height = importedTexture.mHeight;
-    if (height > std::numeric_limits<std::size_t>::max() / width
-        || width * height > std::numeric_limits<std::size_t>::max() / 4) {
-        throw TextureLoadError("Embedded texture '" + assetName + "' is too large.");
-    }
-
-    const std::size_t pixelCount = width * height;
-    Texture::ByteBuffer imageData(pixelCount * 4);
-    for (std::size_t pixelIndex = 0; pixelIndex < pixelCount; ++pixelIndex) {
-        const aiTexel& source = importedTexture.pcData[pixelIndex];
-        imageData[pixelIndex * 4 + 0] = source.r;
-        imageData[pixelIndex * 4 + 1] = source.g;
-        imageData[pixelIndex * 4 + 2] = source.b;
-        imageData[pixelIndex * 4 + 3] = source.a;
-    }
-
-    TextureInfo info;
-    info.sourceFileName = assetName;
-    info.sourceFileSize = imageData.size();
-    info.width = importedTexture.mWidth;
-    info.height = importedTexture.mHeight;
-    info.depth = 1;
-    info.format = {TextureComponentType::UInt8, 4};
-    info.colorSpace = isSrgb ? TextureColorSpace::SRGB : TextureColorSpace::Linear;
-    info.mipLevels.push_back({
-        importedTexture.mWidth,
-        importedTexture.mHeight,
-        1,
-        0,
-        imageData.size(),
-    });
-    return Texture::Create(std::move(info), std::move(imageData));
-}
-
-struct ImportedTextureSlot {
-    std::uint32_t textureIndex = InvalidModelIndex;
-    std::uint32_t texCoord = 0;
-    glm::vec2 offset = glm::vec2(0.0f);
-    glm::vec2 scale = glm::vec2(1.0f);
-    float rotation = 0.0f;
-    aiTextureType type = aiTextureType_NONE;
-
-    bool hasTexture() const noexcept
-    {
-        return textureIndex != InvalidModelIndex;
-    }
-};
-
-class MaterialImportSession {
-public:
-    MaterialImportSession(LoadedModel& model,
-                          const std::filesystem::path& modelPath,
-                          const aiScene& scene,
-                          const ModelLoadOptions& options)
-        : model_(model)
-        , modelPath_(modelPath)
-        , scene_(scene)
-        , options_(options)
-    {
-    }
-
-    ModelMaterial Import(const aiMaterial* material, std::uint32_t materialIndex);
-    void LoadTextures();
-
-private:
-    std::uint32_t EnsureTexture(const aiString& importedPath, bool isSrgb);
-    ImportedTextureSlot ReadTextureSlot(const aiMaterial* material,
-                                        aiTextureType type,
-                                        bool isSrgb,
-                                        unsigned int slotIndex = 0);
-    std::uint16_t AppendTextureInfo(const ImportedTextureSlot& slot);
-
-    LoadedModel& model_;
-    const std::filesystem::path& modelPath_;
-    const aiScene& scene_;
-    const ModelLoadOptions& options_;
-    std::vector<const aiTexture*> embeddedSources_;
-};
-
-std::uint32_t MaterialImportSession::EnsureTexture(const aiString& importedPath, bool isSrgb)
-{
-    if (!options_.loadTextures || importedPath.length == 0) {
-        return InvalidModelIndex;
-    }
-
-    const auto embeddedResult = scene_.GetEmbeddedTextureAndIndex(importedPath.C_Str());
-    const aiTexture* embeddedTexture = embeddedResult.first;
-    const bool embedded = embeddedTexture != nullptr;
-    const std::uint32_t embeddedIndex =
-        embeddedResult.second >= 0
-            ? static_cast<std::uint32_t>(embeddedResult.second)
-            : InvalidModelIndex;
-    const std::filesystem::path sourcePath =
-        embedded ? std::filesystem::path() : ResolveTexturePath(modelPath_, importedPath);
-
-    std::string name;
-    if (embedded && embeddedTexture->mFilename.length > 0) {
-        name = embeddedTexture->mFilename.C_Str();
-    }
-    if (name.empty()) {
-        name = embedded ? std::string(importedPath.C_Str())
-                        : sourcePath.filename().u8string();
-    }
-
-    for (std::size_t index = 0; index < model_.textures.size(); ++index) {
-        const ModelTextureAsset& candidate = model_.textures[index];
-        const bool sameSource =
-            embedded ? (candidate.embedded && candidate.embeddedIndex == embeddedIndex)
-                     : (!candidate.embedded && candidate.sourcePath == sourcePath);
-        if (sameSource && candidate.isSrgb == isSrgb) {
-            return CheckedIndex(index, "Texture count");
-        }
-    }
-
-    const std::uint32_t textureIndex = CheckedIndex(model_.textures.size(), "Texture count");
-    ModelTextureAsset asset;
-    asset.name = std::move(name);
-    asset.sourcePath = sourcePath;
-    asset.isSrgb = isSrgb;
-    asset.embedded = embedded;
-    asset.embeddedIndex = embeddedIndex;
-    model_.textures.push_back(std::move(asset));
-    embeddedSources_.push_back(embeddedTexture);
-
-    return textureIndex;
-}
-
-void MaterialImportSession::LoadTextures()
-{
-    struct PendingTexture {
-        std::size_t textureIndex = 0;
-        const aiTexture* embeddedSource = nullptr;
-    };
-    struct TextureLoadResult {
-        TextureHandle texture;
-        std::string error;
-    };
-
-    std::vector<PendingTexture> pendingTextures;
-    pendingTextures.reserve(model_.textures.size());
-    for (std::size_t textureIndex = 0; textureIndex < model_.textures.size(); ++textureIndex) {
-        const ModelTextureAsset& asset = model_.textures[textureIndex];
-        if (asset.embedded && !options_.loadEmbeddedTextures) {
+        if (model.meshes[meshIndex].indexCount == 0) {
             continue;
         }
-        pendingTextures.push_back({textureIndex, embeddedSources_[textureIndex]});
+        model.drawables.push_back({node.mName.C_Str(), meshIndex, modelFromMesh});
     }
-    if (pendingTextures.empty()) {
-        return;
-    }
-
-    std::vector<TextureLoadResult> results(pendingTextures.size());
-    std::atomic<std::size_t> nextTexture{0};
-    const auto worker = [&]() {
-        for (;;) {
-            const std::size_t pendingIndex =
-                nextTexture.fetch_add(1, std::memory_order_relaxed);
-            if (pendingIndex >= pendingTextures.size()) {
-                return;
-            }
-
-            const PendingTexture& pending = pendingTextures[pendingIndex];
-            const ModelTextureAsset& asset = model_.textures[pending.textureIndex];
-            TextureLoadResult& result = results[pendingIndex];
-            try {
-                if (asset.embedded) {
-                    if (pending.embeddedSource == nullptr) {
-                        throw TextureLoadError(
-                            "Assimp did not provide the registered embedded texture data.");
-                    }
-                    result.texture = LoadEmbeddedTexture(
-                        *pending.embeddedSource,
-                        asset.name,
-                        asset.isSrgb,
-                        options_.textureLoadOptions);
-                } else if (options_.cacheExternalTextures) {
-                    result.texture =
-                        TextureLoader::LoadCached(asset.sourcePath, options_.textureLoadOptions);
-                } else {
-                    result.texture =
-                        TextureLoader::Load(asset.sourcePath, options_.textureLoadOptions);
-                }
-            } catch (const std::exception& error) {
-                result.error =
-                    "Failed to load model texture '" + asset.name + "': " + error.what();
-            } catch (...) {
-                result.error =
-                    "Failed to load model texture '" + asset.name + "': unknown error";
-            }
-        }
-    };
-
-    std::size_t requestedWorkers = options_.maxTextureLoadConcurrency;
-    if (requestedWorkers == 0) {
-        requestedWorkers = std::thread::hardware_concurrency();
-        if (requestedWorkers == 0) {
-            requestedWorkers = 1;
-        }
-    }
-    const std::size_t workerCount =
-        std::min(requestedWorkers, pendingTextures.size());
-
-    std::vector<std::thread> workers;
-    workers.reserve(workerCount > 0 ? workerCount - 1 : 0);
-    try {
-        for (std::size_t workerIndex = 1; workerIndex < workerCount; ++workerIndex) {
-            workers.emplace_back(worker);
-        }
-        worker();
-    } catch (...) {
-        for (std::thread& thread : workers) {
-            if (thread.joinable()) {
-                thread.join();
-            }
-        }
-        throw;
-    }
-    for (std::thread& thread : workers) {
-        thread.join();
-    }
-
-    std::string firstFailure;
-    for (std::size_t pendingIndex = 0; pendingIndex < pendingTextures.size(); ++pendingIndex) {
-        ModelTextureAsset& asset =
-            model_.textures[pendingTextures[pendingIndex].textureIndex];
-        TextureLoadResult& result = results[pendingIndex];
-        asset.texture = std::move(result.texture);
-        if (!result.error.empty()) {
-            asset.loadError = std::move(result.error);
-            model_.warnings.push_back(asset.loadError);
-            if (firstFailure.empty()) {
-                firstFailure = asset.loadError;
-            }
-        }
-    }
-
-    if (options_.failOnMissingTextures && !firstFailure.empty()) {
-        throw ModelLoadError(firstFailure);
-    }
-}
-
-ImportedTextureSlot MaterialImportSession::ReadTextureSlot(const aiMaterial* material,
-                                                           aiTextureType type,
-                                                           bool isSrgb,
-                                                           unsigned int slotIndex)
-{
-    ImportedTextureSlot result;
-    if (material == nullptr || material->GetTextureCount(type) <= slotIndex) {
-        return result;
-    }
-
-    aiString importedPath;
-    unsigned int uvIndex = 0;
-    if (material->GetTexture(type, slotIndex, &importedPath, nullptr, &uvIndex)
-        != AI_SUCCESS) {
-        return result;
-    }
-
-    result.textureIndex = EnsureTexture(importedPath, isSrgb);
-    result.texCoord = uvIndex;
-    result.type = type;
-
-    aiUVTransform transform;
-    if (material->Get(AI_MATKEY_UVTRANSFORM(type, slotIndex), transform) == AI_SUCCESS) {
-        result.offset = {transform.mTranslation.x, transform.mTranslation.y};
-        result.scale = {transform.mScaling.x, transform.mScaling.y};
-        result.rotation = transform.mRotation;
-    }
-    return result;
-}
-
-std::uint16_t MaterialImportSession::AppendTextureInfo(const ImportedTextureSlot& slot)
-{
-    if (!slot.hasTexture()) {
-        return InvalidMaterialTexture;
-    }
-
-    if (model_.textureInfos.empty()) {
-        model_.textureInfos.emplace_back();
-    }
-    const std::uint32_t index = CheckedIndex(model_.textureInfos.size(), "Texture-info count");
-    if (index > std::numeric_limits<std::uint16_t>::max()) {
-        throw ModelLoadError(
-            "A material texture-info index exceeds the 16-bit GltfShadeMaterial limit.");
-    }
-    ModelTextureInfo info;
-    info.textureIndex = slot.textureIndex;
-    info.texCoord = slot.texCoord;
-    info.offset = slot.offset;
-    info.scale = slot.scale;
-    info.rotation = slot.rotation;
-    model_.textureInfos.push_back(info);
-    return static_cast<std::uint16_t>(index);
-}
-
-ModelMaterial MaterialImportSession::Import(const aiMaterial* material,
-                                            std::uint32_t materialIndex)
-{
-    ModelMaterial result;
-    (void)materialIndex;
-    if (material == nullptr) {
-        return result;
-    }
-
-    aiColor4D importedBaseColor;
-    if (aiGetMaterialColor(material, AI_MATKEY_BASE_COLOR, &importedBaseColor) == AI_SUCCESS
-        || aiGetMaterialColor(material, AI_MATKEY_COLOR_DIFFUSE, &importedBaseColor)
-               == AI_SUCCESS) {
-        result.pbrBaseColorFactor = {
-            importedBaseColor.r,
-            importedBaseColor.g,
-            importedBaseColor.b,
-            importedBaseColor.a,
-        };
-    }
-
-    aiColor4D emissive;
-    if (aiGetMaterialColor(material, AI_MATKEY_COLOR_EMISSIVE, &emissive) == AI_SUCCESS) {
-        result.emissiveFactor = {emissive.r, emissive.g, emissive.b};
-    }
-
-    aiGetMaterialFloat(material, AI_MATKEY_METALLIC_FACTOR, &result.pbrMetallicFactor);
-    aiGetMaterialFloat(material, AI_MATKEY_ROUGHNESS_FACTOR, &result.pbrRoughnessFactor);
-
-    float opacity = 1.0f;
-    if (aiGetMaterialFloat(material, AI_MATKEY_OPACITY, &opacity) == AI_SUCCESS) {
-        result.pbrBaseColorFactor.w = opacity;
-    }
-
-    int twoSided = 0;
-    if (aiGetMaterialInteger(material, AI_MATKEY_TWOSIDED, &twoSided) == AI_SUCCESS) {
-        result.doubleSided = twoSided != 0 ? 1 : 0;
-    }
-
-    int unlit = 0;
-    if (material->Get("$mat.gltf.unlit", 0, 0, unlit) == AI_SUCCESS) {
-        result.unlit = unlit != 0 ? 1 : 0;
-    } else {
-        int shadingMode = aiShadingMode_PBR_BRDF;
-        if (aiGetMaterialInteger(material, AI_MATKEY_SHADING_MODEL, &shadingMode)
-                == AI_SUCCESS
-            && shadingMode == aiShadingMode_Unlit) {
-            result.unlit = 1;
-        }
-    }
-
-    aiGetMaterialFloat(material, AI_MATKEY_GLTF_ALPHACUTOFF, &result.alphaCutoff);
-    aiString alphaMode;
-    if (aiGetMaterialString(material, AI_MATKEY_GLTF_ALPHAMODE, &alphaMode) == AI_SUCCESS) {
-        if (EqualsIgnoreCase(alphaMode.C_Str(), "MASK")) {
-            result.alphaMode = static_cast<std::int32_t>(AlphaMode::Mask);
-        } else if (EqualsIgnoreCase(alphaMode.C_Str(), "BLEND")) {
-            result.alphaMode = static_cast<std::int32_t>(AlphaMode::Blend);
-        }
-    } else if (result.pbrBaseColorFactor.w < 1.0f) {
-        result.alphaMode = static_cast<std::int32_t>(AlphaMode::Blend);
-    }
-
-    aiGetMaterialFloat(material, AI_MATKEY_REFRACTI, &result.ior);
-    aiGetMaterialFloat(material, AI_MATKEY_TRANSMISSION_FACTOR, &result.transmissionFactor);
-    aiGetMaterialFloat(material, AI_MATKEY_VOLUME_THICKNESS_FACTOR, &result.thicknessFactor);
-    aiGetMaterialFloat(
-        material, AI_MATKEY_VOLUME_ATTENUATION_DISTANCE, &result.attenuationDistance);
-    aiGetMaterialFloat(material, AI_MATKEY_CLEARCOAT_FACTOR, &result.clearcoatFactor);
-    aiGetMaterialFloat(
-        material, AI_MATKEY_CLEARCOAT_ROUGHNESS_FACTOR, &result.clearcoatRoughness);
-    aiGetMaterialFloat(material, AI_MATKEY_SPECULAR_FACTOR, &result.specularFactor);
-    aiGetMaterialFloat(
-        material, AI_MATKEY_SHEEN_ROUGHNESS_FACTOR, &result.sheenRoughnessFactor);
-    aiGetMaterialFloat(material, AI_MATKEY_ANISOTROPY_FACTOR, &result.anisotropyStrength);
-
-    float anisotropyAngle = 0.0f;
-    if (aiGetMaterialFloat(material, AI_MATKEY_ANISOTROPY_ROTATION, &anisotropyAngle)
-        == AI_SUCCESS) {
-        result.anisotropyRotation = {std::cos(anisotropyAngle), std::sin(anisotropyAngle)};
-    }
-
-    aiColor4D color;
-    if (aiGetMaterialColor(material, AI_MATKEY_VOLUME_ATTENUATION_COLOR, &color)
-        == AI_SUCCESS) {
-        result.attenuationColor = {color.r, color.g, color.b};
-    }
-    if (aiGetMaterialColor(material, AI_MATKEY_COLOR_SPECULAR, &color) == AI_SUCCESS) {
-        result.specularColorFactor = {color.r, color.g, color.b};
-        result.pbrSpecularFactor = result.specularColorFactor;
-    }
-    if (aiGetMaterialColor(material, AI_MATKEY_SHEEN_COLOR_FACTOR, &color)
-        == AI_SUCCESS) {
-        result.sheenColorFactor = {color.r, color.g, color.b};
-    }
-
-    if (aiGetMaterialFloat(material, AI_MATKEY_GLOSSINESS_FACTOR,
-                           &result.pbrGlossinessFactor) == AI_SUCCESS) {
-        result.usePbrSpecularGlossiness = 1;
-        aiColor4D diffuse;
-        if (aiGetMaterialColor(material, AI_MATKEY_COLOR_DIFFUSE, &diffuse)
-            == AI_SUCCESS) {
-            result.pbrDiffuseFactor = {diffuse.r, diffuse.g, diffuse.b, diffuse.a};
-        }
-    }
-
-    // These keys are used by Assimp builds that already expose the newer glTF
-    // extensions even when their public material.h has not added named macros.
-    material->Get("$mat.ior", 0, 0, result.ior);
-    material->Get("$mat.iridescence.factor", 0, 0, result.iridescenceFactor);
-    material->Get("$mat.iridescence.ior", 0, 0, result.iridescenceIor);
-    material->Get("$mat.iridescence.thicknessMinimum", 0, 0,
-                  result.iridescenceThicknessMinimum);
-    material->Get("$mat.iridescence.thicknessMaximum", 0, 0,
-                  result.iridescenceThicknessMaximum);
-    material->Get("$mat.dispersion", 0, 0, result.dispersion);
-    material->Get("$mat.diffuseTransmission.factor", 0, 0,
-                  result.diffuseTransmissionFactor);
-    material->Get("$mat.volume.scatterAnisotropy", 0, 0, result.scatterAnisotropy);
-
-    if (material->Get("$clr.diffuseTransmission.factor", 0, 0, color) == AI_SUCCESS) {
-        result.diffuseTransmissionColor = {color.r, color.g, color.b};
-    }
-    if (material->Get("$clr.volume.multiscatter", 0, 0, color) == AI_SUCCESS) {
-        result.multiscatterColorFactor = {color.r, color.g, color.b};
-    }
-
-    if (!options_.loadTextures) {
-        return result;
-    }
-
-    ImportedTextureSlot baseColorSlot =
-        ReadTextureSlot(material, aiTextureType_BASE_COLOR, options_.srgbBaseColorTextures);
-    if (!baseColorSlot.hasTexture()) {
-        baseColorSlot =
-            ReadTextureSlot(material, aiTextureType_DIFFUSE, options_.srgbBaseColorTextures);
-    }
-    result.pbrBaseColorTexture = AppendTextureInfo(baseColorSlot);
-
-    ImportedTextureSlot normal = ReadTextureSlot(material, aiTextureType_NORMALS, false);
-    if (!normal.hasTexture()) {
-        normal = ReadTextureSlot(material, aiTextureType_NORMAL_CAMERA, false);
-    }
-    result.normalTexture = AppendTextureInfo(normal);
-    if (normal.hasTexture()) {
-        material->Get(
-            AI_MATKEY_GLTF_TEXTURE_SCALE(normal.type, 0),
-            result.normalTextureScale);
-    }
-
-    ImportedTextureSlot metallicRoughness =
-        ReadTextureSlot(material, aiTextureType_GLTF_METALLIC_ROUGHNESS, false);
-    if (!metallicRoughness.hasTexture()) {
-        metallicRoughness =
-            ReadTextureSlot(material, aiTextureType_DIFFUSE_ROUGHNESS, false);
-    }
-    result.pbrMetallicRoughnessTexture = AppendTextureInfo(metallicRoughness);
-
-    const ImportedTextureSlot emissiveTexture =
-        ReadTextureSlot(material, aiTextureType_EMISSIVE, options_.srgbEmissiveTextures);
-    result.emissiveTexture = AppendTextureInfo(emissiveTexture);
-
-    const ImportedTextureSlot occlusion =
-        ReadTextureSlot(material, aiTextureType_AMBIENT_OCCLUSION, false);
-    result.occlusionTexture = AppendTextureInfo(occlusion);
-    if (occlusion.hasTexture()) {
-        material->Get(
-            AI_MATKEY_GLTF_TEXTURE_STRENGTH(occlusion.type, 0),
-            result.occlusionStrength);
-    }
-
-    result.transmissionTexture = AppendTextureInfo(
-        ReadTextureSlot(material, aiTextureType_TRANSMISSION, false, 0));
-    result.thicknessTexture = AppendTextureInfo(
-        ReadTextureSlot(material, aiTextureType_TRANSMISSION, false, 1));
-    result.clearcoatTexture = AppendTextureInfo(
-        ReadTextureSlot(material, aiTextureType_CLEARCOAT, false, 0));
-    result.clearcoatRoughnessTexture = AppendTextureInfo(
-        ReadTextureSlot(material, aiTextureType_CLEARCOAT, false, 1));
-    result.clearcoatNormalTexture = AppendTextureInfo(
-        ReadTextureSlot(material, aiTextureType_CLEARCOAT, false, 2));
-    result.specularTexture = AppendTextureInfo(
-        ReadTextureSlot(material, aiTextureType_SPECULAR, false, 0));
-    result.specularColorTexture = AppendTextureInfo(
-        ReadTextureSlot(material, aiTextureType_SPECULAR, true, 1));
-    result.anisotropyTexture = AppendTextureInfo(
-        ReadTextureSlot(material, aiTextureType_ANISOTROPY, false));
-    result.sheenColorTexture = AppendTextureInfo(
-        ReadTextureSlot(material, aiTextureType_SHEEN, true, 0));
-    result.sheenRoughnessTexture = AppendTextureInfo(
-        ReadTextureSlot(material, aiTextureType_SHEEN, false, 1));
-
-    if (result.usePbrSpecularGlossiness != 0) {
-        result.pbrDiffuseTexture = AppendTextureInfo(
-            ReadTextureSlot(material, aiTextureType_DIFFUSE, true));
-        result.pbrSpecularGlossinessTexture = result.specularTexture;
-    }
-    return result;
-}
-
-struct NodeImportContext {
-    LoadedModel& model;
-    const std::vector<std::uint32_t>& meshToSubmesh;
-};
-
-std::uint32_t AppendNode(const aiNode* importedNode,
-                         std::uint32_t parentIndex,
-                         NodeImportContext& context)
-{
-    if (importedNode == nullptr) {
-        return InvalidModelIndex;
-    }
-
-    ModelAsset& asset = context.model.asset;
-    const std::uint32_t nodeIndex = CheckedIndex(asset.nodes.size(), "Node count");
-
-    aiVector3D scale;
-    aiQuaternion rotation;
-    aiVector3D translation;
-    importedNode->mTransformation.Decompose(scale, rotation, translation);
-
-    ModelNodeAsset node;
-    node.name = ImportedName(importedNode->mName, "Node", nodeIndex);
-    node.parent = parentIndex;
-    node.transformIndex = CheckedIndex(asset.transforms.size(), "Transform count");
-    node.translation = {translation.x, translation.y, translation.z};
-    node.rotation = glm::quat(rotation.w, rotation.x, rotation.y, rotation.z);
-    node.scale = {scale.x, scale.y, scale.z};
-    asset.transforms.push_back(ToMatrix4(importedNode->mTransformation));
-    asset.nodes.push_back(std::move(node));
-
-    for (unsigned int meshSlot = 0; meshSlot < importedNode->mNumMeshes; ++meshSlot) {
-        const unsigned int importedMeshIndex = importedNode->mMeshes[meshSlot];
-        if (importedMeshIndex < context.meshToSubmesh.size()
-            && context.meshToSubmesh[importedMeshIndex] != InvalidModelIndex) {
-            asset.nodes[nodeIndex].submeshIndices.push_back(
-                context.meshToSubmesh[importedMeshIndex]);
-        }
-    }
-
-    std::uint32_t previousChild = InvalidModelIndex;
-    for (unsigned int childSlot = 0; childSlot < importedNode->mNumChildren; ++childSlot) {
-        const std::uint32_t childIndex =
-            AppendNode(importedNode->mChildren[childSlot], nodeIndex, context);
-        if (childIndex == InvalidModelIndex) {
-            continue;
-        }
-        if (previousChild == InvalidModelIndex) {
-            asset.nodes[nodeIndex].firstChild = childIndex;
-        } else {
-            asset.nodes[previousChild].nextSibling = childIndex;
-        }
-        previousChild = childIndex;
-    }
-    return nodeIndex;
-}
-
-void AccumulateModelBounds(LoadedModel& model,
-                           std::uint32_t nodeIndex,
-                           const glm::mat4& parentToModel)
-{
-    if (nodeIndex >= model.asset.nodes.size()) {
-        return;
-    }
-
-    const ModelNodeAsset& node = model.asset.nodes[nodeIndex];
-    const glm::mat4 localTransform =
-        node.transformIndex < model.asset.transforms.size()
-            ? model.asset.transforms[node.transformIndex]
-            : glm::mat4(1.0f);
-    const glm::mat4 localToModel = Multiply(parentToModel, localTransform);
-
-    for (const std::uint32_t submeshIndex : node.submeshIndices) {
-        if (submeshIndex >= model.asset.submeshes.size()) {
-            continue;
-        }
-        ExpandAABB(
-            model.asset.bounds,
-            TransformAABB(model.asset.submeshes[submeshIndex].bounds, localToModel));
-    }
-
-    std::uint32_t childIndex = node.firstChild;
-    while (childIndex != InvalidModelIndex && childIndex < model.asset.nodes.size()) {
-        const std::uint32_t nextSibling = model.asset.nodes[childIndex].nextSibling;
-        AccumulateModelBounds(model, childIndex, localToModel);
-        childIndex = nextSibling;
+    for (unsigned int child = 0; child < node.mNumChildren; ++child) {
+        AppendDrawables(*node.mChildren[child], modelFromMesh, model);
     }
 }
 
@@ -890,7 +204,6 @@ void ConfigureImporter(Assimp::Importer& importer,
                        const std::filesystem::path& path,
                        const ModelLoadOptions& options)
 {
-    importer.SetPropertyFloat(AI_CONFIG_GLOBAL_SCALE_FACTOR_KEY, options.globalScale);
     importer.SetPropertyInteger(
         AI_CONFIG_PP_SBP_REMOVE,
         aiPrimitiveType_POINT | aiPrimitiveType_LINE);
@@ -901,7 +214,7 @@ void ConfigureImporter(Assimp::Importer& importer,
             options.loadMaterials ? 1 : 0);
         importer.SetPropertyInteger(
             AI_CONFIG_IMPORT_FBX_READ_TEXTURES,
-            options.loadTextures && options.loadEmbeddedTextures ? 1 : 0);
+            options.loadMaterials ? 1 : 0);
         importer.SetPropertyInteger(AI_CONFIG_IMPORT_FBX_READ_CAMERAS, 0);
         importer.SetPropertyInteger(AI_CONFIG_IMPORT_FBX_READ_LIGHTS, 0);
         importer.SetPropertyInteger(AI_CONFIG_IMPORT_FBX_READ_ANIMATIONS, 0);
@@ -921,7 +234,7 @@ std::uint32_t ModelLoader::DefaultAssimpPostProcessFlags() noexcept
     return static_cast<std::uint32_t>(
         aiProcess_Triangulate | aiProcess_GenSmoothNormals | aiProcess_CalcTangentSpace
         | aiProcess_JoinIdenticalVertices | aiProcess_ImproveCacheLocality
-        | aiProcess_SortByPType | aiProcess_FindInvalidData | aiProcess_GenBoundingBoxes
+        | aiProcess_SortByPType | aiProcess_FindInvalidData
         | aiProcess_FlipUVs);
 }
 
@@ -948,9 +261,6 @@ ModelHandle ModelLoader::Load(const std::filesystem::path& path,
                                          ? DefaultAssimpPostProcessFlags()
                                          : options.assimpPostProcessFlags;
     postProcessFlags |= options.extraAssimpPostProcessFlags;
-    if (options.globalScale != 1.0f) {
-        postProcessFlags |= aiProcess_GlobalScale;
-    }
 
     const aiScene* importedScene = importer.ReadFile(sourcePath.u8string(), postProcessFlags);
     if (importedScene == nullptr || importedScene->mRootNode == nullptr) {
@@ -961,69 +271,32 @@ ModelHandle ModelLoader::Load(const std::filesystem::path& path,
     }
 
     std::shared_ptr<LoadedModel> model = std::make_shared<LoadedModel>();
-    model->asset.name = sourcePath.stem().u8string();
-    model->asset.sourcePath = sourcePath;
+    model->name = sourcePath.stem().u8string();
+    model->sourcePath = sourcePath;
     if ((importedScene->mFlags & AI_SCENE_FLAGS_INCOMPLETE) != 0) {
         model->warnings.push_back("Assimp marked the imported scene as incomplete.");
     }
 
-    MaterialImportSession materialSession(*model, sourcePath, *importedScene, options);
-    if (options.loadMaterials) {
-        model->materials.reserve(importedScene->mNumMaterials);
-        for (unsigned int materialIndex = 0; materialIndex < importedScene->mNumMaterials;
-             ++materialIndex) {
-            model->materials.push_back(materialSession.Import(
-                importedScene->mMaterials[materialIndex],
-                materialIndex));
-        }
-    }
-    if (model->materials.empty()) {
-        ModelMaterial defaultMaterial;
-        model->materials.push_back(std::move(defaultMaterial));
-    }
+    detail::ImportMaterials(*model, *importedScene, options);
 
     ReserveGeometry(*importedScene, model->geometry);
     model->meshes.reserve(importedScene->mNumMeshes);
-    model->asset.submeshes.reserve(importedScene->mNumMeshes);
-    std::vector<std::uint32_t> meshToSubmesh;
-    meshToSubmesh.reserve(importedScene->mNumMeshes);
-
-    for (unsigned int importedMeshIndex = 0;
-         importedMeshIndex < importedScene->mNumMeshes;
-         ++importedMeshIndex) {
-        const aiMesh* importedMesh = importedScene->mMeshes[importedMeshIndex];
-        if (importedMesh == nullptr) {
-            meshToSubmesh.push_back(InvalidModelIndex);
-            continue;
+    for (unsigned int index = 0; index < importedScene->mNumMeshes; ++index) {
+        const aiMesh& mesh = *importedScene->mMeshes[index];
+        const std::uint32_t materialIndex = options.loadMaterials ? mesh.mMaterialIndex : 0;
+        if (materialIndex >= model->materials.size()) {
+            throw ModelLoadError("Assimp returned an invalid mesh material reference.");
         }
-
-        const std::uint32_t materialIndex =
-            importedMesh->mMaterialIndex < model->materials.size()
-                ? importedMesh->mMaterialIndex
-                : 0;
-        const std::uint32_t meshIndex =
-            AppendMeshGeometry(*importedMesh, materialIndex, *model);
-
-        ModelSubmeshAsset submesh;
-        submesh.meshIndex = meshIndex;
-        submesh.bounds = model->meshes[meshIndex].bounds;
-        const std::uint32_t submeshIndex =
-            CheckedIndex(model->asset.submeshes.size(), "Submesh count");
-        model->asset.submeshes.push_back(std::move(submesh));
-        meshToSubmesh.push_back(submeshIndex);
+        AppendMeshGeometry(mesh, materialIndex, *model);
     }
 
-    model->asset.nodes.reserve(importedScene->mNumMeshes + 1);
-    model->asset.transforms.reserve(importedScene->mNumMeshes + 1);
-    NodeImportContext nodeContext{*model, meshToSubmesh};
-    model->asset.rootNode =
-        AppendNode(importedScene->mRootNode, InvalidModelIndex, nodeContext);
-    if (model->asset.rootNode == InvalidModelIndex) {
-        throw ModelLoadError("Model node hierarchy import failed.");
-    }
-
-    AccumulateModelBounds(*model, model->asset.rootNode, glm::mat4(1.0f));
-    materialSession.LoadTextures();
+    model->drawables.reserve(importedScene->mNumMeshes);
+    // Apply object scale without Assimp's GlobalScale TRS decomposition, which
+    // can discard shear. Shared geometry stays in its original mesh space.
+    glm::mat4 modelFromRoot(options.globalScale);
+    modelFromRoot[3][3] = 1.0f;
+    AppendDrawables(*importedScene->mRootNode, modelFromRoot, *model);
+    model->bounds = model->CalculateBounds();
     return model;
 }
 

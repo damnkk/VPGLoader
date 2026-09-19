@@ -1,48 +1,29 @@
 #include <VPGLoader/Model.hpp>
 
-#include <cmath>
-
 namespace vpgloader {
-
-glm::mat4 Multiply(const glm::mat4& left, const glm::mat4& right) noexcept
-{
-    return left * right;
-}
-
-glm::vec3 TransformPoint(const glm::mat4& transform,
-                         const glm::vec3& point) noexcept
-{
-    const glm::vec4 transformed = transform * glm::vec4(point, 1.0f);
-    glm::vec3 result = glm::vec3(transformed);
-    const float w = transformed.w;
-    if (w != 0.0f && std::abs(w - 1.0f) > 1.0e-6f) {
-        result.x /= w;
-        result.y /= w;
-        result.z /= w;
-    }
-    return result;
-}
 
 AABB TransformAABB(const AABB& bounds, const glm::mat4& transform) noexcept
 {
     if (!bounds.valid) {
         return {};
     }
+    // Transform center and extents; works for rotation, reflection, and shear.
+    const glm::vec3 center = (bounds.min + bounds.max) * 0.5f;
+    const glm::vec3 extent = (bounds.max - bounds.min) * 0.5f;
+    const glm::vec3 transformedCenter = glm::vec3(transform * glm::vec4(center, 1.0f));
+    const glm::vec3 transformedExtent =
+        glm::abs(glm::vec3(transform[0])) * extent.x
+        + glm::abs(glm::vec3(transform[1])) * extent.y
+        + glm::abs(glm::vec3(transform[2])) * extent.z;
+    return {transformedCenter - transformedExtent, transformedCenter + transformedExtent, true};
+}
 
-    const glm::vec3 corners[] = {
-        {bounds.min.x, bounds.min.y, bounds.min.z},
-        {bounds.max.x, bounds.min.y, bounds.min.z},
-        {bounds.min.x, bounds.max.y, bounds.min.z},
-        {bounds.max.x, bounds.max.y, bounds.min.z},
-        {bounds.min.x, bounds.min.y, bounds.max.z},
-        {bounds.max.x, bounds.min.y, bounds.max.z},
-        {bounds.min.x, bounds.max.y, bounds.max.z},
-        {bounds.max.x, bounds.max.y, bounds.max.z},
-    };
-
+AABB LoadedModel::CalculateBounds(const glm::mat4& worldFromModel) const noexcept
+{
     AABB result;
-    for (const glm::vec3& corner : corners) {
-        ExpandAABB(result, TransformPoint(transform, corner));
+    for (const ModelDrawable& drawable : drawables) {
+        ExpandAABB(result, TransformAABB(meshes[drawable.meshIndex].bounds,
+                                       worldFromModel * drawable.modelFromMesh));
     }
     return result;
 }

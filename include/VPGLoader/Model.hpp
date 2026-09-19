@@ -4,7 +4,6 @@
 #include <VPGLoader/Texture.hpp>
 
 #include <glm/glm.hpp>
-#include <glm/gtc/quaternion.hpp>
 
 #include <cstdint>
 #include <cstddef>
@@ -25,30 +24,18 @@ struct AABB {
     bool valid = false;
 };
 
-VPGLOADER_API glm::mat4 Multiply(const glm::mat4& left,
-                                 const glm::mat4& right) noexcept;
-VPGLOADER_API glm::vec3 TransformPoint(const glm::mat4& transform,
-                                        const glm::vec3& point) noexcept;
+// Model transforms are affine (translation, rotation, scale, or shear).
 VPGLOADER_API AABB TransformAABB(const AABB& bounds,
                                  const glm::mat4& transform) noexcept;
 VPGLOADER_API void ExpandAABB(AABB& bounds, const glm::vec3& point) noexcept;
 VPGLOADER_API void ExpandAABB(AABB& bounds, const AABB& other) noexcept;
 
-struct ModelSubmeshAsset {
-    std::uint32_t meshIndex = InvalidModelIndex;
-    AABB bounds;
-};
-
-struct ModelNodeAsset {
+// One draw of a shared mesh. The source hierarchy is resolved during import;
+// modelFromMesh maps mesh-local vertices directly into model space.
+struct ModelDrawable {
     std::string name;
-    std::uint32_t parent = InvalidModelIndex;
-    std::uint32_t firstChild = InvalidModelIndex;
-    std::uint32_t nextSibling = InvalidModelIndex;
-    std::uint32_t transformIndex = InvalidModelIndex;
-    glm::vec3 translation = glm::vec3(0.0f);
-    glm::quat rotation = glm::quat(1.0f, 0.0f, 0.0f, 0.0f);
-    glm::vec3 scale = glm::vec3(1.0f);
-    std::vector<std::uint32_t> submeshIndices;
+    std::uint32_t meshIndex = InvalidModelIndex;
+    glm::mat4 modelFromMesh = glm::mat4(1.0f);
 };
 
 // Range in the model-wide geometry arrays. Indices remain local to this
@@ -201,16 +188,6 @@ static_assert(offsetof(ModelMaterial, doubleSided) == 224);
 static_assert(offsetof(ModelMaterial, pbrBaseColorTexture) == 228);
 static_assert(offsetof(ModelMaterial, _pad1) == 270);
 
-struct ModelAsset {
-    std::string name;
-    std::filesystem::path sourcePath;
-    std::vector<ModelSubmeshAsset> submeshes;
-    std::vector<ModelNodeAsset> nodes;
-    std::vector<glm::mat4> transforms;
-    AABB bounds;
-    std::uint32_t rootNode = InvalidModelIndex;
-};
-
 class LoadedModel;
 using ModelHandle = std::shared_ptr<const LoadedModel>;
 
@@ -226,7 +203,14 @@ public:
     LoadedModel(LoadedModel&&) noexcept;
     LoadedModel& operator=(LoadedModel&&) noexcept;
 
-    ModelAsset asset;
+    // Unions transformed mesh bounds in one pass. Use worldFromModel to get
+    // world bounds without modifying this shared asset. Mesh indices must be valid.
+    AABB CalculateBounds(const glm::mat4& worldFromModel = glm::mat4(1.0f)) const noexcept;
+
+    std::string name;
+    std::filesystem::path sourcePath;
+    std::vector<ModelDrawable> drawables;
+    AABB bounds; // Model-space bounds calculated at load time.
     ModelGeometryData geometry;
     std::vector<ModelMeshAsset> meshes;
     std::vector<ModelMaterial> materials;

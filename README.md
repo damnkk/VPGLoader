@@ -45,6 +45,11 @@ The Vulkan viewer example additionally requires a Vulkan SDK with `glslc`.
 GLFW is restored through `vcpkg.json`; Vulkan remains an example-only system
 dependency and is not linked into VPGLoader itself.
 
+On Windows, the build deploys the viewer's runtime DLLs beside the executable,
+including `VPGLoader.dll` in shared builds and third-party dependencies. Keep
+these DLLs with the executable; launching it does not require a developer
+shell or adding the library's build directory to `PATH`.
+
 Run the viewer with any model format supported by the model loader:
 
 ```powershell
@@ -52,8 +57,8 @@ Run the viewer with any model format supported by the model loader:
   D:\assets\models\viking_room.obj
 ```
 
-The viewer loads the complete CPU model through `ModelLoader`, traverses its
-node hierarchy, uploads geometry and base-color textures to Vulkan, and
+The viewer loads the complete CPU model through `ModelLoader`, iterates its
+flat drawable list, uploads geometry and base-color textures to Vulkan, and
 automatically orbits the model-space bounds. Press `E`, switch to the console,
 and enter a `.vpgmodel` path (or an existing directory) to export the current
 CPU model and its sibling KTX textures. Use the mouse wheel to move the orbit
@@ -109,6 +114,18 @@ least one handle exists.
 are filled with zero and a missing alpha channel is filled with one, without
 changing component precision.
 
+Model textures use the same public texture APIs as standalone callers:
+external files and native KTX caches go through `Load`/`LoadCached`, embedded
+encoded images through `LoadFromMemory`, and embedded raw pixels through
+`LoadFromPixels`. Model export likewise uses `TextureConverter::SaveAsKtx2`.
+The model module only resolves sources and material bindings; the texture
+module owns decoding, channel conversion, pixel storage, and mip layout.
+
+`LoadFromPixels(name, TexturePixelView)` accepts borrowed, tightly packed
+RGBA8 or BGRA8 2D pixels and returns an owned RGBA8 texture with one mip level.
+It preserves row order and color-space metadata without gamma conversion.
+The input bytes can be released immediately after the call returns.
+
 `TextureLoader::LoadCached()` uses a process-wide weak cache. It coalesces
 concurrent requests and reuses an already-live texture, but does not retain
 CPU pixel data after callers release their handles. This is the appropriate
@@ -142,27 +159,44 @@ systems never copies its geometry or texture bytes:
 
 ```cpp
 auto model = vpgloader::ModelLoader::Load("assets/scene.glb");
+const glm::mat4 worldFromModel(1.0f); // Engine-owned object transform.
 
-for (const auto& node : model->asset.nodes) {
-    for (const auto submeshIndex : node.submeshIndices) {
-        const auto& submesh = model->asset.submeshes[submeshIndex];
-        const auto& mesh = model->meshes[submesh.meshIndex];
-        // Interpret the node and mesh in the consuming scene or renderer.
-    }
+for (const auto& drawable : model->drawables) {
+    const auto& mesh = model->meshes[drawable.meshIndex];
+    const auto& material = model->materials[mesh.materialIndex];
+    const glm::mat4 worldFromMesh = worldFromModel * drawable.modelFromMesh;
+    // Draw mesh.indexCount indices at mesh.firstIndex, with mesh.firstVertex
+    // as base vertex, using worldFromMesh and material.
 }
+
+const auto worldBounds = model->CalculateBounds(worldFromModel);
 ```
 
-The result contains model-wide structure-of-arrays geometry, per-mesh ranges,
-materials, material texture-use metadata, decoded `TextureHandle` objects,
-the original node hierarchy, local transforms, submesh associations, and
-model-space bounds. Material texture members index `textureInfos`; each
-texture-info entry then identifies a texture plus its UV set and transform.
+`LoadedModel` is a static rendering asset, not a scene graph. Its `drawables`
+are mesh instances with a name, mesh index, and mesh-to-model matrix. Import
+resolves the source hierarchy once (including empty parent nodes); the result
+contains no parents, children, TRS copies, or transform-index indirection.
+Multiple nodes referencing the same mesh share geometry. A node with several
+material surfaces becomes several drawables. Source vertices stay in mesh
+space, preserving normals and tangents without baking transforms into geometry.
+Skinning, animation, cameras, and lights are outside this static model API.
 
-Model math data is exposed directly as GLM types: geometry uses
-`glm::vec2`/`glm::vec3`/`glm::vec4`, nodes use `glm::quat`, and transforms use
-`glm::mat4`. Geometry and transforms can therefore be passed to GLM- or
-Vulkan-facing code without conversion. Matrices are column-major and use
-`matrix[3].xyz` for translation.
+Each `ModelMeshAsset` is one material surface: a range in the model-wide
+structure-of-arrays geometry, a material index, and a mesh-local AABB. Indices
+are local to the mesh's vertex range. `bounds` is the union of mesh bounds
+transformed by the drawables, in model space. `CalculateBounds(worldFromModel)`
+calculates world bounds in one linear pass; these are conservative transformed
+mesh boxes, not a scan of every vertex. Empty models have invalid bounds.
+For mutable `LoadedModel` builders, refresh `bounds = CalculateBounds()` after
+editing drawable transforms; recompute mesh bounds when editing vertex data.
+An engine can keep its own mutable instance transforms alongside the shared
+immutable asset and use `TransformAABB`/`ExpandAABB` to update their bounds.
+
+All math types are GLM vectors and matrices. Matrices are column-major, use
+`matrix[3].xyz` for translation, and are affine (rotation, translation, scale,
+or shear). Normal matrices and mirrored winding remain the renderer's concern.
+Material texture members index `textureInfos`; each entry identifies a texture
+plus its UV set and transform.
 
 External model textures use the same process-wide weak texture cache as
 `TextureLoader::LoadCached()`. Embedded compressed images in GLB/FBX files are
@@ -172,9 +206,13 @@ Material parsing only registers texture requests. Once every material has
 been parsed, VPGLoader loads the registered textures as one bounded parallel
 batch. `ModelLoadOptions::maxTextureLoadConcurrency` controls the worker count;
 zero selects the machine's reported hardware concurrency.
-Set `ModelLoadOptions::loadEmbeddedTextures` to `false` for a path-only
-workflow. Embedded-only images then have no filesystem path and cannot be
-loaded. A missing texture records a message in both
+Set `loadTextures=false` to retain texture references and UV metadata without
+decoding pixels. Set `loadEmbeddedTextures=false` to skip embedded image
+decoding specifically. Embedded-only images have no filesystem path.
+`loadMaterials=false` installs a single default material and omits texture
+references. `globalScale` applies to both imported and native models: it scales
+the drawable matrices without rewriting geometry or decomposing transforms.
+A missing texture records a message in both
 `ModelTextureAsset::loadError` and `LoadedModel::warnings` while leaving the
 remaining model usable. Set `ModelLoadOptions::failOnMissingTextures` when a
 missing texture should instead fail the whole load.
@@ -186,7 +224,7 @@ no other texture handle or bounded cache retains it.
 ## Native model export
 
 Export an already loaded CPU model with `ModelExporter`. Geometry, mesh
-ranges, nodes, transforms, materials, texture-use metadata, bounds, and
+ranges, drawables, materials, texture-use metadata, mesh bounds, and
 warnings are written to a versioned little-endian binary file. Each loaded
 texture is written as an uncompressed KTX2 file beside it:
 
@@ -214,5 +252,35 @@ auto cachedModel = vpgloader::ModelLoader::Load("cache/scene.vpgmodel");
 
 The file header contains a magic value, format version, and byte-order marker.
 The reader validates all sizes, enum values, ranges, and cross-references
-before returning the immutable model handle. Version 2 files intentionally
-target little-endian platforms.
+before returning the immutable model handle. Version 3 files target little-endian platforms.
+Older `.vpgmodel` files must be regenerated from their original source files.
+The format stores flat drawables; model bounds are derived again on load.
+
+### Migration from the node API
+
+- Iterate `model->drawables` instead of walking `asset.nodes` and `asset.submeshes`.
+- Use `drawable.meshIndex` and `drawable.modelFromMesh` directly.
+- `asset.name`, `asset.sourcePath`, and `asset.bounds` moved onto `LoadedModel`.
+- Use GLM matrix multiplication directly; the redundant `Multiply` and
+  `TransformPoint` wrappers were removed. `TransformAABB` accepts affine transforms.
+
+## Maintenance and validation
+
+The model pipeline is split by responsibility: `ModelLoader.cpp` handles
+geometry and hierarchy flattening, `AssimpMaterials.cpp` handles material
+translation and embedded images, `TextureLoading.cpp` owns bounded texture
+workers and ordered error reporting, and `ModelBinary.cpp` owns native I/O.
+File-boundary checks for truncated data, buffer ranges, and invalid references
+remain in place. Internally, consumers can rely on valid mesh/material indices
+instead of repeatedly skipping invalid records or substituting identity matrices.
+
+Build and run the CPU regression tests (no Vulkan device needed):
+
+```powershell
+cmake -S . -B build/debug -DVPGLOADER_BUILD_TESTS=ON
+cmake --build build/debug
+ctest --test-dir build/debug --output-on-failure
+```
+
+Tests cover hierarchy flattening, shared mesh instances, affine bounds,
+material/texture load options, parallel texture errors, and native round trips.

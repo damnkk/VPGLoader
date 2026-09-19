@@ -16,6 +16,21 @@ struct TextureLoadOptions {
     bool loadMipmaps = true;
 };
 
+enum class TexturePixelLayout : std::uint8_t {
+    Rgba8,
+    Bgra8,
+};
+
+// Borrowed, tightly packed 2D pixels in row order. No padding or mip chain.
+struct TexturePixelView {
+    const std::uint8_t* data = nullptr;
+    std::size_t size = 0;
+    std::uint32_t width = 0;
+    std::uint32_t height = 0;
+    TexturePixelLayout layout = TexturePixelLayout::Rgba8;
+    TextureColorSpace colorSpace = TextureColorSpace::Unknown;
+};
+
 class VPGLOADER_API TextureLoadError : public std::runtime_error {
 public:
     explicit TextureLoadError(const std::string& message);
@@ -37,6 +52,12 @@ public:
                                         const std::uint8_t* data,
                                         std::size_t size,
                                         const TextureLoadOptions& options = {});
+
+    // Copies raw pixels into an owned RGBA8 texture with one mip level.
+    // Preserves row order and color-space metadata; performs no gamma conversion.
+    // The source buffer may be released as soon as this function returns.
+    static TextureHandle LoadFromPixels(std::string_view name,
+                                        const TexturePixelView& pixels);
 };
 
 } // namespace vpgloader

@@ -24,7 +24,7 @@ enum class TextureColorSpace : std::uint8_t {
     SRGB,
 };
 
-struct TextureFormat {
+struct VPGLOADER_API TextureFormat {
     TextureComponentType componentType = TextureComponentType::UInt8;
     std::uint8_t channels = 4;
 

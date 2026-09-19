@@ -16,7 +16,6 @@
 #include <cstddef>
 #include <cstring>
 #include <fstream>
-#include <functional>
 #include <iostream>
 #include <limits>
 #include <optional>
@@ -279,14 +278,14 @@ struct VulkanViewer::Impl {
             throw std::runtime_error("The model contains no drawable submeshes");
         }
 
-        if (model->asset.bounds.valid) {
+        if (model->bounds.valid) {
             orbitCenter = {
-                (model->asset.bounds.min.x + model->asset.bounds.max.x) * 0.5f,
-                (model->asset.bounds.min.y + model->asset.bounds.max.y) * 0.5f,
-                (model->asset.bounds.min.z + model->asset.bounds.max.z) * 0.5f,
+                (model->bounds.min.x + model->bounds.max.x) * 0.5f,
+                (model->bounds.min.y + model->bounds.max.y) * 0.5f,
+                (model->bounds.min.z + model->bounds.max.z) * 0.5f,
             };
             const auto extent =
-                model->asset.bounds.max - model->asset.bounds.min;
+                model->bounds.max - model->bounds.min;
             orbitRadius = std::max(
                 0.1f, 0.5f * std::sqrt(glm::dot(extent, extent)));
         }
@@ -299,65 +298,11 @@ struct VulkanViewer::Impl {
 
     void BuildDrawItems()
     {
-        if (model->asset.nodes.empty()) {
-            for (std::uint32_t meshIndex = 0;
-                 meshIndex < model->meshes.size(); ++meshIndex) {
-                drawItems.push_back(
-                    {meshIndex, model->meshes[meshIndex].materialIndex, {}});
-            }
-            return;
-        }
-
-        std::vector<bool> visited(model->asset.nodes.size(), false);
-        std::function<void(std::uint32_t, const glm::mat4&)> visit;
-        visit = [&](std::uint32_t nodeIndex,
-                    const glm::mat4& parentTransform) {
-            if (nodeIndex >= model->asset.nodes.size() || visited[nodeIndex]) {
-                return;
-            }
-            visited[nodeIndex] = true;
-
-            const auto& node = model->asset.nodes[nodeIndex];
-            glm::mat4 localTransform(1.0f);
-            if (node.transformIndex < model->asset.transforms.size()) {
-                localTransform = model->asset.transforms[node.transformIndex];
-            }
-            const auto worldTransform =
-                vpgloader::Multiply(parentTransform, localTransform);
-
-            for (const auto submeshIndex : node.submeshIndices) {
-                if (submeshIndex >= model->asset.submeshes.size()) {
-                    continue;
-                }
-                const auto meshIndex =
-                    model->asset.submeshes[submeshIndex].meshIndex;
-                if (meshIndex >= model->meshes.size()) {
-                    continue;
-                }
-                drawItems.push_back({
-                    meshIndex,
-                    model->meshes[meshIndex].materialIndex,
-                    worldTransform,
-                });
-            }
-
-            auto child = node.firstChild;
-            while (child != vpgloader::InvalidModelIndex &&
-                   child < model->asset.nodes.size()) {
-                visit(child, worldTransform);
-                child = model->asset.nodes[child].nextSibling;
-            }
-        };
-
-        const glm::mat4 identity(1.0f);
-        if (model->asset.rootNode < model->asset.nodes.size()) {
-            visit(model->asset.rootNode, identity);
-        }
-        for (std::uint32_t nodeIndex = 0;
-             nodeIndex < model->asset.nodes.size(); ++nodeIndex) {
-            if (!visited[nodeIndex]) {
-                visit(nodeIndex, identity);
-            }
+        drawItems.reserve(model->drawables.size());
+        for (const auto& drawable : model->drawables) {
+            drawItems.push_back({drawable.meshIndex,
+                                 model->meshes[drawable.meshIndex].materialIndex,
+                                 drawable.modelFromMesh});
         }
     }
 
@@ -1750,7 +1695,7 @@ struct VulkanViewer::Impl {
 
         CameraData camera;
         camera.viewProjection =
-            vpgloader::Multiply(projection, view);
+            projection * view;
         std::memcpy(
             uniformMappings[currentFrame], &camera, sizeof(camera));
     }

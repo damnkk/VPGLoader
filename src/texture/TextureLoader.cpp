@@ -1,3 +1,5 @@
+#include "../PathUtils.hpp"
+
 #include <VPGLoader/TextureLoader.hpp>
 
 #include <VPGLoader/TextureCache.hpp>
@@ -54,15 +56,8 @@ constexpr ktx_uint32_t VkFormatR32g32Sfloat = 103;
 constexpr ktx_uint32_t VkFormatR32g32b32Sfloat = 106;
 constexpr ktx_uint32_t VkFormatR32g32b32a32Sfloat = 109;
 
-std::string LowerAscii(std::string value)
-{
-    for (char& character : value) {
-        if (character >= 'A' && character <= 'Z') {
-            character = static_cast<char>(character - 'A' + 'a');
-        }
-    }
-    return value;
-}
+using detail::LowerAscii;
+using detail::ResolvePath;
 
 TextureComponentType GetOiioComponentType(const OIIO::TypeDesc& type,
                                           const std::string& sourceName)
@@ -97,17 +92,6 @@ std::size_t CheckedMipByteSize(const OIIO::ImageSpec& spec, const TextureFormat&
                                        static_cast<std::size_t>(spec.height));
     size = checkedMultiply(size, static_cast<std::size_t>(spec.depth));
     return checkedMultiply(size, format.bytesPerPixel());
-}
-
-std::filesystem::path ResolveSourcePath(const std::filesystem::path& path)
-{
-    std::error_code error;
-    std::filesystem::path resolved = std::filesystem::absolute(path, error);
-    if (error) {
-        return path;
-    }
-    const std::filesystem::path canonical = std::filesystem::weakly_canonical(resolved, error);
-    return error ? resolved.lexically_normal() : canonical;
 }
 
 TextureColorSpace GetColorSpace(const OIIO::ImageSpec& spec)
@@ -376,7 +360,7 @@ TextureHandle LoadKtx(const std::filesystem::path& path,
     const TextureFormat format = ktxFormat.format;
 
     TextureInfo info;
-    info.sourcePath = ResolveSourcePath(path);
+    info.sourcePath = ResolvePath(path);
     info.sourceFileName = info.sourcePath.filename().u8string();
     info.sourceExtension = info.sourcePath.extension().u8string();
     std::error_code fileSizeError;
@@ -607,7 +591,7 @@ TextureHandle TextureLoader::Load(const std::filesystem::path& path,
     }
 
     TextureInfo info;
-    info.sourcePath = ResolveSourcePath(path);
+    info.sourcePath = ResolvePath(path);
     info.sourceFileName = info.sourcePath.filename().u8string();
     info.sourceExtension = info.sourcePath.extension().u8string();
     std::error_code fileSizeError;
@@ -647,6 +631,42 @@ TextureHandle TextureLoader::LoadFromMemory(std::string_view name,
     info.sourceExtension = sourceHint.extension().u8string();
     info.sourceFileSize = size;
     return DecodeImage(std::move(input), std::move(info), sourceName, options);
+}
+
+TextureHandle TextureLoader::LoadFromPixels(std::string_view name,
+                                            const TexturePixelView& pixels)
+{
+    const std::string sourceName = name.empty() ? "pixel-image" : std::string(name);
+    const std::uint64_t pixelCount =
+        static_cast<std::uint64_t>(pixels.width) * pixels.height;
+    if (pixels.data == nullptr || pixelCount == 0
+        || pixelCount > std::numeric_limits<std::size_t>::max() / 4
+        || pixels.size != pixelCount * 4) {
+        ThrowImageError(sourceName, "pixel buffer must contain width * height * 4 bytes");
+    }
+    if (pixels.layout != TexturePixelLayout::Rgba8
+        && pixels.layout != TexturePixelLayout::Bgra8) {
+        ThrowImageError(sourceName, "unsupported pixel layout");
+    }
+
+    Texture::ByteBuffer imageData(pixels.data, pixels.data + pixels.size);
+    if (pixels.layout == TexturePixelLayout::Bgra8) {
+        for (std::size_t offset = 0; offset < imageData.size(); offset += 4) {
+            std::swap(imageData[offset], imageData[offset + 2]);
+        }
+    }
+
+    TextureInfo info;
+    const std::filesystem::path sourceHint(sourceName);
+    info.sourceFileName = sourceHint.filename().u8string();
+    info.sourceExtension = sourceHint.extension().u8string();
+    info.sourceFileSize = pixels.size;
+    info.width = pixels.width;
+    info.height = pixels.height;
+    info.format = {TextureComponentType::UInt8, 4};
+    info.colorSpace = pixels.colorSpace;
+    info.mipLevels.push_back({pixels.width, pixels.height, 1, 0, pixels.size});
+    return Texture::Create(std::move(info), std::move(imageData));
 }
 
 } // namespace vpgloader

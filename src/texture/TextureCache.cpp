@@ -1,3 +1,5 @@
+#include "../PathUtils.hpp"
+
 #include <VPGLoader/TextureCache.hpp>
 
 #include <algorithm>
@@ -157,18 +159,7 @@ TextureCache& TextureCache::Default()
 
 std::string TextureCache::BuildSourceKey(const std::filesystem::path& path)
 {
-    std::error_code error;
-    std::filesystem::path normalized = std::filesystem::absolute(path, error);
-    if (error) {
-        normalized = path;
-        error.clear();
-    }
-    normalized = std::filesystem::weakly_canonical(normalized, error);
-    if (error) {
-        normalized = normalized.lexically_normal();
-    }
-
-    std::string key = normalized.generic_u8string();
+    std::string key = detail::ResolvePath(path).generic_u8string();
 #if defined(_WIN32)
     std::transform(key.begin(), key.end(), key.begin(), [](unsigned char character) {
         return static_cast<char>(std::tolower(character));

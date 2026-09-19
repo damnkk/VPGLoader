@@ -22,16 +22,18 @@ enum class ModelFileFormat : std::uint8_t {
 struct ModelLoadOptions {
     ModelFileFormat format = ModelFileFormat::Auto;
 
-    // Zero selects ModelLoader::DefaultAssimpPostProcessFlags().
+    // Assimp imports only. Zero selects DefaultAssimpPostProcessFlags().
     std::uint32_t assimpPostProcessFlags = 0;
     std::uint32_t extraAssimpPostProcessFlags = 0;
+    // Uniform model-space scale applied to drawable matrices, not vertex data.
     float globalScale = 1.0f;
 
     bool loadMaterials = true;
+    // Decode pixels. Texture references and UV metadata are retained when false.
     bool loadTextures = true;
     bool cacheExternalTextures = true;
-    // Assimp only extracts encoded bytes for container-embedded images;
-    // VPGLoader still performs the actual image decoding through OpenImageIO.
+    // Embedded images use TextureLoader too: encoded bytes go to LoadFromMemory,
+    // while uncompressed Assimp pixels go to LoadFromPixels.
     bool loadEmbeddedTextures = true;
     // Zero uses std::thread::hardware_concurrency(). The actual worker count
     // never exceeds the number of registered texture requests.

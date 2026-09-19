@@ -4,10 +4,12 @@ project(VPGLoader VERSION 0.1.0 LANGUAGES CXX)
 
 include(GNUInstallDirs)
 include(CMakePackageConfigHelpers)
+include(cmake/DeployRuntime.cmake)
 
 option(BUILD_SHARED_LIBS "Build VPGLoader as a shared library" OFF)
 option(VPGLOADER_BUILD_SAMPLE "Build the Vulkan model-viewer sample" ON)
 option(VPGLOADER_ENABLE_PACKAGING "Generate CPack package metadata" ON)
+option(VPGLOADER_BUILD_TESTS "Build CPU model import and round-trip tests" OFF)
 
 find_package(assimp CONFIG REQUIRED)
 find_package(glm CONFIG REQUIRED)
@@ -18,6 +20,8 @@ find_package(Threads REQUIRED)
 add_library(VPGLoader
     src/VPGLoader.cpp
     src/model/Model.cpp
+    src/model/AssimpMaterials.cpp
+    src/model/TextureLoading.cpp
     src/model/ModelBinary.cpp
     src/model/ModelExporter.cpp
     src/model/ModelLoader.cpp
@@ -39,11 +43,11 @@ target_include_directories(VPGLoader
 )
 target_link_libraries(VPGLoader
     PUBLIC
-        assimp::assimp
         glm::glm
+    PRIVATE
+        assimp::assimp
         KTX::ktx
         OpenImageIO::OpenImageIO
-    PRIVATE
         Threads::Threads
 )
 
@@ -61,6 +65,11 @@ set_target_properties(VPGLoader PROPERTIES
 
 if(VPGLOADER_BUILD_SAMPLE)
     add_subdirectory(examples)
+endif()
+
+if(VPGLOADER_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(tests)
 endif()
 
 install(TARGETS VPGLoader
