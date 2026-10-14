@@ -198,6 +198,17 @@ or shear). Normal matrices and mirrored winding remain the renderer's concern.
 Material texture members index `textureInfos`; each entry identifies a texture
 plus its UV set and transform.
 
+Material imports recognize the case-insensitive, dot-separated `DoubleSided`
+name flag used by Falcor assets such as ORCA Bistro. FBX materials with no
+explicit alpha mode and a base-color opacity of one use `AlphaMode::Mask`
+when their loaded base-color texture has four channels. This follows Falcor's
+base-color alpha convention without scanning pixels; RGB textures normalized
+to RGBA have alpha filled with one, so all of their texels survive the cutoff.
+Explicit alpha modes are preserved, and scalar opacity below one retains the
+existing `AlphaMode::Blend` behavior. The texture-based default requires decoded
+textures, so it is not applied with `loadTextures=false`. Resolved flags are
+saved in `.vpgmodel`; re-import source FBX files to update older native assets.
+
 External model textures use the same process-wide weak texture cache as
 `TextureLoader::LoadCached()`. Embedded compressed images in GLB/FBX files are
 extracted by Assimp as encoded bytes and then decoded by OpenImageIO through

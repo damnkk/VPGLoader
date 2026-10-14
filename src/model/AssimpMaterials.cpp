@@ -14,6 +14,25 @@
 namespace vpgloader::detail {
 namespace {
 
+bool HasMaterialNameFlag(const aiMaterial* material, const std::string& flag)
+{
+    aiString importedName;
+    if (aiGetMaterialString(material, AI_MATKEY_NAME, &importedName) != AI_SUCCESS)
+    {
+        return false;
+    }
+    const std::string name  = LowerAscii(importedName.C_Str());
+    std::size_t       begin = name.find('.');
+    while (begin != std::string::npos)
+    {
+        ++begin;
+        const std::size_t end = name.find('.', begin);
+        if (name.substr(begin, end - begin) == flag) return true;
+        begin = end;
+    }
+    return false;
+}
+
 std::filesystem::path ResolveTexturePath(const std::filesystem::path& modelPath,
                                          const aiString& importedPath)
 {
@@ -109,6 +128,7 @@ private:
     const std::filesystem::path& modelPath_;
     const aiScene& scene_;
     const ModelLoadOptions& options_;
+    std::vector<std::size_t> alphaMaskCandidates_;
     std::vector<const aiTexture*> embeddedSources_;
 };
 
@@ -178,6 +198,25 @@ void MaterialImportSession::LoadTextures()
                                   options_.textureLoadOptions)
             : LoadExternalTexture(asset.sourcePath, options_);
     });
+
+    // Falcor's FBX convention: a base-color format with alpha uses masking
+    // unless the material explicitly selected another mode. Our normalized
+    // RGBA textures may have alpha filled with one; those texels all survive.
+    // Resolve the mode before exporting or uploading materials.
+    for (std::size_t materialIndex : alphaMaskCandidates_)
+    {
+        ModelMaterial& material = model_.materials[materialIndex];
+        if (material.pbrBaseColorTexture == InvalidMaterialTexture)
+        {
+            continue;
+        }
+        const ModelTextureInfo& info    = model_.textureInfos[material.pbrBaseColorTexture];
+        const TextureHandle&    texture = model_.textures[info.textureIndex].texture;
+        if (texture && texture->info().format.channels == 4)
+        {
+            material.alphaMode = static_cast<std::int32_t>(AlphaMode::Mask);
+        }
+    }
 }
 
 ImportedTextureSlot MaterialImportSession::ReadTextureSlot(const aiMaterial* material,
@@ -267,6 +306,11 @@ ModelMaterial MaterialImportSession::Import(const aiMaterial* material)
     if (aiGetMaterialInteger(material, AI_MATKEY_TWOSIDED, &twoSided) == AI_SUCCESS) {
         result.doubleSided = twoSided != 0 ? 1 : 0;
     }
+    // Falcor treats dot-separated material-name tokens as import flags.
+    if (HasMaterialNameFlag(material, "doublesided"))
+    {
+        result.doubleSided = 1;
+    }
 
     int unlit = 0;
     if (material->Get("$mat.gltf.unlit", 0, 0, unlit) == AI_SUCCESS) {
@@ -282,14 +326,24 @@ ModelMaterial MaterialImportSession::Import(const aiMaterial* material)
 
     aiGetMaterialFloat(material, AI_MATKEY_GLTF_ALPHACUTOFF, &result.alphaCutoff);
     aiString alphaMode;
-    if (aiGetMaterialString(material, AI_MATKEY_GLTF_ALPHAMODE, &alphaMode) == AI_SUCCESS) {
-        if (LowerAscii(alphaMode.C_Str()) == "mask") {
+    if (aiGetMaterialString(material, AI_MATKEY_GLTF_ALPHAMODE, &alphaMode) == AI_SUCCESS)
+    {
+        if (LowerAscii(alphaMode.C_Str()) == "mask")
+        {
             result.alphaMode = static_cast<std::int32_t>(AlphaMode::Mask);
-        } else if (LowerAscii(alphaMode.C_Str()) == "blend") {
+        }
+        else if (LowerAscii(alphaMode.C_Str()) == "blend")
+        {
             result.alphaMode = static_cast<std::int32_t>(AlphaMode::Blend);
         }
-    } else if (result.pbrBaseColorFactor.w < 1.0f) {
+    }
+    else if (result.pbrBaseColorFactor.w < 1.0f)
+    {
         result.alphaMode = static_cast<std::int32_t>(AlphaMode::Blend);
+    }
+    else if (options_.format == ModelFileFormat::Fbx || LowerAscii(modelPath_.extension().u8string()) == ".fbx")
+    {
+        alphaMaskCandidates_.push_back(model_.materials.size());
     }
 
     aiGetMaterialFloat(material, AI_MATKEY_REFRACTI, &result.ior);
